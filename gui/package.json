@@ -13,9 +13,12 @@
     "@tauri-apps/api": "^2"
   },
   "devDependencies": {
-    "@sveltejs/vite-plugin-svelte": "^4",
+    "@sveltejs/vite-plugin-svelte": "^7",
     "@tauri-apps/cli": "^2",
     "svelte": "^5",
-    "vite": "^5"
+    "vite": "^8"
+  },
+  "allowScripts": {
+    "fsevents@2.3.3": true
   }
 }
