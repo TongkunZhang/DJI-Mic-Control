@@ -1,5 +1,8 @@
 # DJI Mic Control
 
+<img alt="DJI Mic Control GUI screenshot (light)" src="light.png" width="49%">
+<img alt="DJI Mic Control GUI screenshot (dark)" src="dark.png" width="49%">
+
 Cross-platform control for DJI wireless microphones over USB — a desktop GUI, a
 command-line tool, and the shared Rust library behind both. No mobile app
 required.
