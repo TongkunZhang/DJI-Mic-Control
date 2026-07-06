@@ -158,6 +158,100 @@ fn set_tray_menu(app: &AppHandle, state: &MenuState) {
     }
 }
 
+/// True when there's nothing to hear: no tracked mic, or every tracked mic is
+/// present but not streaming ("No signal" in the device panel).
+fn alert_active(app: &AppHandle) -> bool {
+    let mgr = app.state::<Arc<DeviceManager>>().inner().clone();
+    mgr.list().iter().all(|d| !d.connected)
+}
+
+/// Blend `color` into the pixel at `idx` by `coverage` (0..=1).
+fn blend(rgba: &mut [u8], idx: usize, color: [u8; 4], coverage: f32) {
+    let coverage = coverage.clamp(0.0, 1.0);
+    for c in 0..4 {
+        let src = color[c] as f32 * coverage;
+        let dst = rgba[idx + c] as f32 * (1.0 - coverage);
+        rgba[idx + c] = (src + dst).round().clamp(0.0, 255.0) as u8;
+    }
+}
+
+/// Draw a filled, one-pixel-antialiased disc centered at (`cx`, `cy`).
+fn draw_disc(rgba: &mut [u8], width: u32, height: u32, cx: f32, cy: f32, r: f32, color: [u8; 4]) {
+    let (width, height) = (width as i32, height as i32);
+    let x0 = ((cx - r).floor() as i32).max(0);
+    let x1 = ((cx + r).ceil() as i32).min(width - 1);
+    let y0 = ((cy - r).floor() as i32).max(0);
+    let y1 = ((cy + r).ceil() as i32).min(height - 1);
+    for y in y0..=y1 {
+        for x in x0..=x1 {
+            let (dx, dy) = (x as f32 + 0.5 - cx, y as f32 + 0.5 - cy);
+            let coverage = r + 0.5 - (dx * dx + dy * dy).sqrt();
+            if coverage > 0.0 {
+                blend(rgba, ((y * width + x) * 4) as usize, color, coverage);
+            }
+        }
+    }
+}
+
+/// Draw a round-capped line segment, used for the strokes of the "x".
+fn draw_line(
+    rgba: &mut [u8],
+    width: u32,
+    height: u32,
+    (x0, y0): (f32, f32),
+    (x1, y1): (f32, f32),
+    thickness: f32,
+    color: [u8; 4],
+) {
+    let (width_i, height_i) = (width as i32, height as i32);
+    let pad = thickness;
+    let min_x = (x0.min(x1) - pad).floor().max(0.0) as i32;
+    let max_x = ((x0.max(x1) + pad).ceil() as i32).min(width_i - 1);
+    let min_y = (y0.min(y1) - pad).floor().max(0.0) as i32;
+    let max_y = ((y0.max(y1) + pad).ceil() as i32).min(height_i - 1);
+    let (dx, dy) = (x1 - x0, y1 - y0);
+    let len_sq = dx * dx + dy * dy;
+    for y in min_y..=max_y {
+        for x in min_x..=max_x {
+            let (px, py) = (x as f32 + 0.5, y as f32 + 0.5);
+            let t = if len_sq > 0.0 {
+                (((px - x0) * dx + (py - y0) * dy) / len_sq).clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
+            let (ex, ey) = (x0 + t * dx, y0 + t * dy);
+            let dist = ((px - ex).powi(2) + (py - ey).powi(2)).sqrt();
+            let coverage = thickness / 2.0 + 0.5 - dist;
+            if coverage > 0.0 {
+                blend(rgba, ((y * width_i + x) * 4) as usize, color, coverage);
+            }
+        }
+    }
+}
+
+/// Overlay a small red "no signal" badge (a circle with an "x") in the
+/// bottom-right corner of `base`, returning a new owned icon.
+fn badge_icon(base: &Image<'static>) -> Image<'static> {
+    const RED: [u8; 4] = [0xe0, 0x2b, 0x2b, 0xff];
+    const WHITE: [u8; 4] = [0xff, 0xff, 0xff, 0xff];
+
+    let (width, height) = (base.width(), base.height());
+    let mut rgba = base.rgba().to_vec();
+
+    let r = width.min(height) as f32 * 0.30;
+    let (cx, cy) = (width as f32 - r * 0.95, height as f32 - r * 0.95);
+
+    draw_disc(&mut rgba, width, height, cx, cy, r, WHITE);
+    draw_disc(&mut rgba, width, height, cx, cy, r * 0.86, RED);
+
+    let arm = r * 0.5;
+    let thickness = (r * 0.24).max(1.5);
+    draw_line(&mut rgba, width, height, (cx - arm, cy - arm), (cx + arm, cy + arm), thickness, WHITE);
+    draw_line(&mut rgba, width, height, (cx - arm, cy + arm), (cx + arm, cy - arm), thickness, WHITE);
+
+    Image::new_owned(rgba, width, height)
+}
+
 fn main() {
     // On SIGTERM/SIGINT (logout, shutdown, Ctrl-C) exit via quit_now() so the
     // WebKit helpers are killed rather than crashing in their GL teardown. This
@@ -214,6 +308,12 @@ fn main() {
                 }
             }
 
+            // Base tray icon plus a pre-rendered "no signal" variant, swapped
+            // in when no mic is connected/streaming.
+            let tray_base = Image::from_bytes(include_bytes!("../icons/128x128.png")).ok();
+            let tray_alert = tray_base.as_ref().map(badge_icon);
+            let initial_alert = alert_active(app.handle());
+
             let initial = menu_state(app.handle());
             let menu = build_menu(app.handle(), &initial)?;
             let mut tray = TrayIconBuilder::with_id("main")
@@ -249,16 +349,20 @@ fn main() {
                     }
                     _ => {}
                 });
-            if let Some(icon) = app.default_window_icon().cloned() {
+            let icon = if initial_alert { tray_alert.clone() } else { tray_base.clone() }
+                .or_else(|| app.default_window_icon().cloned());
+            if let Some(icon) = icon {
                 tray = tray.icon(icon);
             }
             tray.build(app)?;
 
             // Keep the tray menu in sync with device count, NC/LED state, and the
-            // autostart setting.
+            // autostart setting; keep the tray icon's "no signal" badge in sync
+            // with whether any mic is actually streaming.
             let handle = app.handle().clone();
             std::thread::spawn(move || {
                 let mut last = initial;
+                let mut last_alert = initial_alert;
                 loop {
                     let state = menu_state(&handle);
                     if state != last {
@@ -266,6 +370,19 @@ fn main() {
                         let h = handle.clone();
                         let _ = handle.run_on_main_thread(move || set_tray_menu(&h, &state));
                     }
+
+                    let alert = alert_active(&handle);
+                    if alert != last_alert {
+                        last_alert = alert;
+                        let icon = if alert { tray_alert.clone() } else { tray_base.clone() };
+                        let h = handle.clone();
+                        let _ = handle.run_on_main_thread(move || {
+                            if let (Some(tray), Some(icon)) = (h.tray_by_id("main"), icon) {
+                                let _ = tray.set_icon(Some(icon));
+                            }
+                        });
+                    }
+
                     std::thread::sleep(Duration::from_millis(1000));
                 }
             });
