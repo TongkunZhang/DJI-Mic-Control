@@ -1,0 +1,30 @@
+[package]
+name = "djimic-gui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Desktop control app for DJI wireless microphones."
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+device = { workspace = true }
+tauri = { version = "2", features = ["image-png", "tray-icon"] }
+tauri-plugin-single-instance = "2"
+tauri-plugin-autostart = "2"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+signal-hook = "0.3"
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[[bin]]
+name = "djimic-gui"
+path = "src/main.rs"
+
+[features]
+# Enabled automatically by `cargo tauri build`; makes the binary serve its
+# embedded frontend instead of connecting to the dev server. Do not remove.
+custom-protocol = ["tauri/custom-protocol"]

@@ -1,0 +1,78 @@
+//! Decoded device state shared by every front-end.
+//!
+//! [`DeviceStatus`] is the model-agnostic snapshot a device reports. Each
+//! [`DeviceModel`](crate::models::DeviceModel) fills it in from its own
+//! heartbeat format; the CLI and GUI only ever see this struct.
+
+use serde::{Serialize, Serializer};
+use std::collections::BTreeMap;
+
+/// A four-component firmware version, e.g. `01.01.00.56`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Firmware(pub [u8; 4]);
+
+impl std::fmt::Display for Firmware {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let [a, b, c, d] = self.0;
+        write!(f, "{a:02}.{b:02}.{c:02}.{d:02}")
+    }
+}
+
+// Serialize as the dotted string so front-ends display "01.01.00.56", not an array.
+impl Serialize for Firmware {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(&self.to_string())
+    }
+}
+
+/// State of one connected transmitter.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct TxInfo {
+    /// Live audio input level (raw device units).
+    pub level: u8,
+    pub serial: String,
+    pub firmware: Firmware,
+}
+
+/// State of the receiver.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct RxInfo {
+    pub serial: String,
+    pub firmware: Firmware,
+}
+
+/// A model-agnostic snapshot of a device's current state.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct DeviceStatus {
+    /// Which [`DeviceModel`](crate::models::DeviceModel) produced this.
+    pub model_id: String,
+    /// True once at least one valid heartbeat has been decoded.
+    pub connected: bool,
+    /// Noise cancellation enabled (toggled by the physical button on the TX).
+    pub nc_enabled: bool,
+    /// Transmitter slots. `None` = that transmitter is powered off.
+    pub tx: [Option<TxInfo>; 2],
+    /// Receiver info, once known.
+    pub rx: Option<RxInfo>,
+    /// Current value slug of every writable setting, keyed by setting id.
+    pub settings: BTreeMap<String, String>,
+}
+
+impl DeviceStatus {
+    /// An empty, disconnected status for the given model.
+    pub fn disconnected(model_id: impl Into<String>) -> Self {
+        Self {
+            model_id: model_id.into(),
+            connected: false,
+            nc_enabled: false,
+            tx: [None, None],
+            rx: None,
+            settings: BTreeMap::new(),
+        }
+    }
+
+    /// Number of powered-on transmitters.
+    pub fn tx_count(&self) -> usize {
+        self.tx.iter().filter(|t| t.is_some()).count()
+    }
+}

@@ -1,0 +1,5 @@
+# DJI wireless microphones — grant non-root USB access.
+# Installed to /usr/lib/udev/rules.d/60-dji-mic.rules by the .deb/.rpm packages.
+# TAG+="uaccess" hands the device to the active local user; MODE is a fallback
+# for systems without systemd-logind.
+SUBSYSTEM=="usb", ATTRS{idVendor}=="2ca3", ATTRS{idProduct}=="4011", MODE="0660", TAG+="uaccess"

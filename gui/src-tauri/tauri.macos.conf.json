@@ -1,0 +1,18 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "app": {
+    "windows": [
+      {
+        "title": "DJI Mic Control",
+        "width": 1040,
+        "height": 700,
+        "minWidth": 760,
+        "minHeight": 540,
+        "decorations": true,
+        "titleBarStyle": "Overlay",
+        "hiddenTitle": true,
+        "visible": false
+      }
+    ]
+  }
+}

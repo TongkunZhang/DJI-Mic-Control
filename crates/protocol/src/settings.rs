@@ -1,0 +1,69 @@
+//! Data-driven description of a device's controllable settings.
+//!
+//! A [`Setting`] is pure metadata: an id, a label, the command it maps to, and
+//! the discrete options it accepts. The CLI enumerates these to build its
+//! `get`/`set` surface and the GUI renders one control per setting, so adding a
+//! setting to a [`DeviceModel`](crate::models::DeviceModel) automatically
+//! extends both front-ends with no other changes.
+
+use serde::Serialize;
+
+/// How a setting should be presented.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum SettingKind {
+    /// Two options — rendered as a switch.
+    Toggle,
+    /// More than two mutually exclusive options — rendered as a segmented picker.
+    Enum,
+}
+
+/// One selectable value of a [`Setting`].
+#[derive(Debug, Clone, Copy, Serialize)]
+pub struct SettingOption {
+    /// Stable slug used on the CLI and wire-agnostic APIs, e.g. `"strong"`.
+    pub value: &'static str,
+    /// Human label, e.g. `"Strong"`.
+    pub label: &'static str,
+    /// The single payload byte sent for this option.
+    pub wire: u8,
+}
+
+/// A controllable setting on a device.
+#[derive(Debug, Clone, Serialize)]
+pub struct Setting {
+    /// Stable slug, e.g. `"noise-cancel"`.
+    pub id: &'static str,
+    /// Human label, e.g. `"Noise Cancel"`.
+    pub label: &'static str,
+    /// Group heading used by the compact UI to cluster related settings.
+    pub group: &'static str,
+    /// Presentation hint.
+    pub kind: SettingKind,
+    /// 16-bit command id used to write this setting.
+    pub command: u16,
+    /// Allowed options, in display order.
+    pub options: &'static [SettingOption],
+    /// Ids of settings this one is mutually exclusive with: when any of them is
+    /// active ("on"), this setting cannot be enabled and should be locked.
+    pub exclusive_with: &'static [&'static str],
+    /// Optional caveat shown next to the control (e.g. reboot warning).
+    pub note: Option<&'static str>,
+}
+
+impl Setting {
+    /// Look up an option by its slug.
+    pub fn option(&self, value: &str) -> Option<&SettingOption> {
+        self.options.iter().find(|o| o.value == value)
+    }
+
+    /// Look up the option whose wire byte matches `wire`.
+    pub fn option_for_wire(&self, wire: u8) -> Option<&SettingOption> {
+        self.options.iter().find(|o| o.wire == wire)
+    }
+
+    /// The valid option slugs, for error messages and CLI help.
+    pub fn value_slugs(&self) -> Vec<&'static str> {
+        self.options.iter().map(|o| o.value).collect()
+    }
+}
