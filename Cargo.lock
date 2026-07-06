@@ -574,7 +574,7 @@ checksum = "c8d4a3bb8b1e0c1050499d1815f5ab16d04f0959b233085fb31653fbfc9d98f9"
 
 [[package]]
 name = "cli"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -826,7 +826,7 @@ dependencies = [
 
 [[package]]
 name = "device"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "async-channel",
  "futures-lite",
@@ -912,7 +912,7 @@ dependencies = [
 
 [[package]]
 name = "djimic-gui"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "device",
  "libc",
@@ -2784,7 +2784,7 @@ dependencies = [
 
 [[package]]
 name = "protocol"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "serde",
  "serde_json",
