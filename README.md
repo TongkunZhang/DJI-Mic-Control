@@ -14,6 +14,16 @@ required.
 
 The wire protocol is documented in [PROTOCOL.md](PROTOCOL.md).
 
+## Windows USB access
+
+Windows binds the receiver's HID interface to its own class driver, and unlike
+Linux/macOS, user-mode code cannot detach and claim that interface at runtime —
+only an interface bound to WinUSB (or libusbK) can be opened. To fix this issue, use [Zadig](https://zadig.akeo.ie/) to replace the
+driver on the receiver's HID interface `Interface 6` with WinUSB, then replug the receiver.
+
+<img alt="Zadig set to WinUSB for the DJI Mic Mini's HID interface" src="zadig.png" width="49%">
+
+
 ## Layout
 
 ```
