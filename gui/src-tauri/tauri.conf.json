@@ -51,6 +51,11 @@
         "postInstallScript": "../../packaging/postinstall.sh",
         "postRemoveScript": "../../packaging/postremove.sh"
       }
+    },
+    "windows": {
+      "nsis": {
+        "installMode": "perMachine"
+      }
     }
   }
 }
