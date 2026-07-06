@@ -36,7 +36,13 @@ case "$OS" in
   Darwin) PLATFORM="macos"; BUNDLES="app,dmg" ;;
   Linux)  PLATFORM="linux"; BUNDLES="deb,rpm,appimage"
           # Let AppImage tooling run by extraction (no FUSE needed on CI hosts).
-          export APPIMAGE_EXTRACT_AND_RUN=1 ;;
+          export APPIMAGE_EXTRACT_AND_RUN=1
+          # linuxdeploy's bundled `strip` (binutils 2.35) can't parse the
+          # `.relr.dyn` section modern distro libs ship with, and aborts the
+          # whole build. Our binary is already stripped by Cargo's
+          # profile.release (strip = true) and the vendored system libs ship
+          # pre-stripped, so this second strip pass is redundant anyway.
+          export NO_STRIP=1 ;;
   *) echo "ERROR: unsupported OS '$OS' — use build-release.ps1 on Windows." >&2; exit 1 ;;
 esac
 
@@ -83,21 +89,40 @@ else
   copy_glob "$BUNDLE_DIR/appimage" "*.AppImage"
 fi
 
-# --- Verify no build-machine paths leaked into the binary --------------------
+# --- Verify no build-machine paths leaked into any shipped file --------------
+# Scans our own binary plus (on Linux) every file linuxdeploy bundled into the
+# AppImage's AppDir, since NO_STRIP=1 above means those files keep whatever
+# they shipped with rather than passing through a second strip.
 BIN="$SCRIPT_DIR/target/release/djimic-gui"
-if [ -f "$BIN" ] && command -v strings >/dev/null 2>&1; then
+SCAN_FILES=()
+[ -f "$BIN" ] && SCAN_FILES+=("$BIN")
+if [ "$PLATFORM" = "linux" ]; then
+  APPDIR="$(ls -d "$BUNDLE_DIR"/appimage/*.AppDir 2>/dev/null | head -1)"
+  if [ -n "$APPDIR" ]; then
+    while IFS= read -r -d '' f; do SCAN_FILES+=("$f"); done < <(find "$APPDIR" -type f -print0)
+  fi
+fi
+
+if [ "${#SCAN_FILES[@]}" -gt 0 ] && command -v strings >/dev/null 2>&1; then
   HOST="$(hostname -s 2>/dev/null || hostname 2>/dev/null || true)"
   USER_NAME="$(id -un 2>/dev/null || whoami 2>/dev/null || true)"
-  LEAKS="$(strings -a "$BIN" \
-            | grep -aF -e "$HOME/" -e "$CARGO_HOME_DIR/" \
-                   ${HOST:+-e "$HOST"} ${USER_NAME:+-e "$USER_NAME"} \
-            | sort -u || true)"
-  if [ -n "$LEAKS" ]; then
-    echo "SECURITY: build-machine paths leaked into the binary:" >&2
-    printf '%s\n' "$LEAKS" | head >&2
+  LEAK_REPORT=""
+  for f in "${SCAN_FILES[@]}"; do
+    # Grep only the file's own string content (not `strings -f`'s filename
+    # prefix) — the AppDir path itself lives under $HOME and would otherwise
+    # false-positive against the very patterns we're checking for.
+    m="$(strings -a "$f" 2>/dev/null \
+          | grep -aF -e "$HOME/" -e "$CARGO_HOME_DIR/" \
+                 ${HOST:+-e "$HOST"} ${USER_NAME:+-e "$USER_NAME"} \
+          | sort -u || true)"
+    [ -n "$m" ] && LEAK_REPORT+=$'\n'"-- $f --"$'\n'"$m"$'\n'
+  done
+  if [ -n "$LEAK_REPORT" ]; then
+    echo "SECURITY: build-machine paths leaked into a shipped file:" >&2
+    printf '%s\n' "$LEAK_REPORT" | head -50 >&2
     exit 1
   fi
-  echo "==> Leak scan clean: no home path, Cargo path, username, or hostname in binary."
+  echo "==> Leak scan clean: no home path, Cargo path, username, or hostname in ${#SCAN_FILES[@]} scanned file(s)."
 else
   echo "WARN: skipped leak scan ('strings' unavailable or binary missing)." >&2
 fi
