@@ -13,12 +13,12 @@ device = { workspace = true }
 tauri = { version = "2", features = ["image-png", "tray-icon"] }
 tauri-plugin-single-instance = "2"
 tauri-plugin-autostart = "2"
+serde = { workspace = true }
+serde_json = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 signal-hook = "0.3"
-serde = { workspace = true }
-serde_json = { workspace = true }
 
 [[bin]]
 name = "djimic-gui"
