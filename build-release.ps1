@@ -2,10 +2,13 @@
 #
 # Build DJI Mic Control for Windows release with all path-privacy safeties on.
 #
-# Produces a single self-contained binary at:
-#     Release\windows\DJI Mic Control.exe
-# (Tauri's Windows app binary is self-contained bar the system WebView2 runtime,
-# so no accompanying directory is needed.) For macOS/Linux, use build-release.sh.
+# Produces two artifacts in Release\windows\ :
+#     DJI Mic Control.exe                     - portable, self-contained binary
+#     DJI Mic Control_<ver>_x64-setup.exe     - NSIS installer
+# The installer registers the app in Add/Remove Programs and the Start menu
+# (so it's searchable) and auto-provisions the WebView2 runtime on install; the
+# portable exe assumes WebView2 is already present. For macOS/Linux, use
+# build-release.sh.
 #
 # "Safeties on" means every absolute filesystem path Rust would otherwise bake
 # into panic/backtrace strings (which `strip` does NOT remove) is remapped away,
@@ -44,42 +47,57 @@ foreach ($tool in 'cargo', 'npm') {
     }
 }
 
-Write-Host '==> Building Windows release (single self-contained exe)'
+Write-Host '==> Building Windows release (portable exe + NSIS installer)'
 
 # --- Build (Tauri runs the frontend `npm run build` itself) ------------------
+# --bundles nsis produces the installer; the standalone exe is still emitted as
+# a byproduct of the compile step, so we get both.
 Push-Location gui
 try {
     npm install --no-audit --no-fund
     if ($LASTEXITCODE -ne 0) { throw 'npm install failed' }
-    npx tauri build --no-bundle
+    npx tauri build --bundles nsis
     if ($LASTEXITCODE -ne 0) { throw 'tauri build failed' }
 } finally {
     Pop-Location
 }
 
-# --- Collect the single exe --------------------------------------------------
+# --- Collect artifacts -------------------------------------------------------
 $Out = Join-Path $ScriptDir 'Release\windows'
 if (Test-Path $Out) { Remove-Item -Recurse -Force $Out }
 New-Item -ItemType Directory -Force -Path $Out | Out-Null
 
+# Portable, self-contained exe (emitted by the compile step).
 $Exe = Join-Path $ScriptDir 'target\release\djimic-gui.exe'
 if (-not (Test-Path $Exe)) { throw "Expected binary not found: $Exe" }
-$Dest = Join-Path $Out 'DJI Mic Control.exe'
-Copy-Item $Exe $Dest
-Write-Host '    + DJI Mic Control.exe'
+Copy-Item $Exe (Join-Path $Out 'DJI Mic Control.exe')
+Write-Host '    + DJI Mic Control.exe (portable)'
 
-# --- Verify no build-machine paths leaked into the binary --------------------
-$bytes = [System.IO.File]::ReadAllBytes($Exe)
-$text  = [System.Text.Encoding]::GetEncoding(28591).GetString($bytes)  # Latin1
+# NSIS installer: registers the app in Add/Remove Programs and the Start menu,
+# and auto-provisions the WebView2 runtime on install.
+$Setup = Get-ChildItem (Join-Path $ScriptDir 'target\release\bundle\nsis') `
+             -Filter '*-setup.exe' -ErrorAction SilentlyContinue | Select-Object -First 1
+if (-not $Setup) { throw 'NSIS installer not found in target\release\bundle\nsis' }
+Copy-Item $Setup.FullName (Join-Path $Out $Setup.Name)
+Write-Host "    + $($Setup.Name) (installer)"
+
+# --- Verify no build-machine paths leaked into either shipped file -----------
 $needles = @("$UserHome\", "$UserHomeF/", "$CargoHome\", "$CargoHomeF/",
-             $env:USERNAME, [System.Net.Dns]::GetHostName())
-$leaks = $needles | Where-Object { $_ -and $text.Contains($_) } | Select-Object -Unique
-if ($leaks) {
-    Write-Error ("SECURITY: build-machine paths leaked into the binary: " +
-                 ($leaks -join ', '))
-    exit 1
+             $env:USERNAME, [System.Net.Dns]::GetHostName()) |
+           Where-Object { $_ } | Select-Object -Unique
+function Assert-NoLeak([string]$path) {
+    $bytes = [System.IO.File]::ReadAllBytes($path)
+    $text  = [System.Text.Encoding]::GetEncoding(28591).GetString($bytes)  # Latin1
+    $hit   = $needles | Where-Object { $text.Contains($_) }
+    if ($hit) {
+        Write-Error ("SECURITY: build-machine paths leaked into " +
+                     "$([System.IO.Path]::GetFileName($path)): " + ($hit -join ', '))
+        exit 1
+    }
 }
-Write-Host '==> Leak scan clean: no home path, Cargo path, username, or hostname in binary.'
+Assert-NoLeak $Exe
+Assert-NoLeak $Setup.FullName
+Write-Host '==> Leak scan clean: no home path, Cargo path, username, or hostname in the exe or installer.'
 
 # --- Verify the logo/resources were embedded into the exe --------------------
 # tauri-build embeds the Windows resource block (app icon + version info) at
@@ -91,5 +109,5 @@ if ($vi.ProductName) {
     Write-Warning 'exe has no embedded version resource - the app icon may be missing.'
 }
 
-Write-Host '==> Done. Artifact in Release\windows:'
+Write-Host '==> Done. Artifacts in Release\windows:'
 Get-ChildItem $Out | Select-Object -ExpandProperty Name
