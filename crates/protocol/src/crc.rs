@@ -1,11 +1,18 @@
 //! DJI CRC-16.
 //!
 //! A CRC-16 built on the reflected `0x8408` polynomial (the same polynomial as
-//! CRC-16/IBM-SDLC / X-25), but with an initial value of `0x0000` and a fixed
-//! *residue* of [`RESIDUE`]: processing an entire valid packet — body **and** its
-//! two trailing CRC bytes — with `init = 0` always yields `0xbb01`. The two CRC
-//! bytes are chosen so that this holds, which lets us both validate received
-//! packets and append a checksum to outgoing ones.
+//! CRC-16/IBM-SDLC / X-25). Every packet's trailing two bytes are chosen so
+//! that checksumming the *entire* packet — body and CRC bytes together —
+//! always lands on a fixed *residue*, regardless of content. This lets us
+//! both validate received packets and append a checksum to outgoing ones
+//! without ever computing over a candidate CRC value.
+//!
+//! The protocol v2 firmware update changed the seed: v1 firmware checksums
+//! with `init = 0x0000` for a residue of `0xbb01` ([`V1_INIT`] /
+//! [`V1_RESIDUE`]); v2 firmware uses `init = 0x3692` for a residue of
+//! `0x0000` ([`V2_INIT`] / [`V2_RESIDUE`]). The polynomial and table are
+//! unchanged — only the seed/residue pair differs — so both versions share
+//! every function here.
 
 /// Reflected-`0x8408` lookup table.
 const TABLE: [u16; 256] = [
@@ -43,8 +50,13 @@ const TABLE: [u16; 256] = [
     0x7bc7, 0x6a4e, 0x58d5, 0x495c, 0x3de3, 0x2c6a, 0x1ef1, 0x0f78,
 ];
 
-/// The constant a valid packet (body + CRC) checksums to with `init = 0`.
-pub const RESIDUE: u16 = 0xbb01;
+/// Seed and target residue for v1 firmware.
+pub const V1_INIT: u16 = 0x0000;
+pub const V1_RESIDUE: u16 = 0xbb01;
+
+/// Seed and target residue for v2 firmware.
+pub const V2_INIT: u16 = 0x3692;
+pub const V2_RESIDUE: u16 = 0x0000;
 
 #[inline]
 fn step(crc: u16, byte: u8) -> u16 {
@@ -56,34 +68,35 @@ pub fn checksum(data: &[u8], init: u16) -> u16 {
     data.iter().fold(init, |crc, &b| step(crc, b))
 }
 
-/// Return `true` if `packet` (body followed by its two CRC bytes) is intact.
-pub fn verify(packet: &[u8]) -> bool {
-    packet.len() >= 2 && checksum(packet, 0) == RESIDUE
+/// Return `true` if `packet` (body followed by its two CRC bytes) is intact,
+/// checksummed from `init` against the expected `residue`.
+pub fn verify(packet: &[u8], init: u16, residue: u16) -> bool {
+    packet.len() >= 2 && checksum(packet, init) == residue
 }
 
-/// Return the two CRC bytes that make `body` checksum to [`RESIDUE`].
+/// Return the two CRC bytes that make `body` checksum to `residue` from `init`.
 ///
-/// Finds `[b0, b1]` such that `checksum(body ++ [b0, b1], 0) == RESIDUE`. For
-/// each candidate `b0` the required `b1` is recovered directly via a reverse
-/// table lookup, so this is O(256) rather than O(65536).
-pub fn crc_bytes(body: &[u8]) -> [u8; 2] {
-    let v = checksum(body, 0);
+/// Finds `[b0, b1]` such that `checksum(body ++ [b0, b1], init) == residue`.
+/// For each candidate `b0` the required `b1` is recovered directly via a
+/// reverse table lookup, so this is O(256) rather than O(65536).
+pub fn crc_bytes(body: &[u8], init: u16, residue: u16) -> [u8; 2] {
+    let v = checksum(body, init);
     for b0 in 0u16..=255 {
         let v1 = step(v, b0 as u8);
-        let target = RESIDUE ^ (v1 >> 8);
+        let target = residue ^ (v1 >> 8);
         if let Some(idx) = TABLE.iter().position(|&t| t == target) {
             let b1 = (v1 ^ idx as u16) & 0xff;
             return [b0 as u8, b1 as u8];
         }
     }
     // Unreachable for the standard reflected-0x8408 table (every high byte of
-    // RESIDUE ^ (v1 >> 8) is present in the table).
+    // residue ^ (v1 >> 8) is present in the table).
     unreachable!("CRC table does not cover every residue byte")
 }
 
-/// Append the two CRC bytes to `body`, returning the complete packet.
-pub fn append(mut body: Vec<u8>) -> Vec<u8> {
-    let crc = crc_bytes(&body);
+/// Append the two CRC bytes that make `body` checksum to `residue` from `init`.
+pub fn append(mut body: Vec<u8>, init: u16, residue: u16) -> Vec<u8> {
+    let crc = crc_bytes(&body, init, residue);
     body.extend_from_slice(&crc);
     body
 }
@@ -95,8 +108,8 @@ mod tests {
     #[test]
     fn appended_packet_has_valid_residue() {
         let body = vec![0x55, 0x13, 0x04, 0x03, 0x02, 0x5a];
-        let packet = append(body);
-        assert!(verify(&packet));
+        let packet = append(body, V1_INIT, V1_RESIDUE);
+        assert!(verify(&packet, V1_INIT, V1_RESIDUE));
     }
 
     #[test]
@@ -106,7 +119,25 @@ mod tests {
             0x55, 0x13, 0x04, 0x03, 0x02, 0x5a, 0x01, 0x00, 0x40, 0x5b, 0x01,
             0x00, 0x03, 0x1d, 0x00, 0x01, 0x01, 0x91, 0xfb,
         ];
-        assert!(verify(full));
-        assert_eq!(crc_bytes(&full[..full.len() - 2]), [0x91, 0xfb]);
+        assert!(verify(full, V1_INIT, V1_RESIDUE));
+        assert_eq!(
+            crc_bytes(&full[..full.len() - 2], V1_INIT, V1_RESIDUE),
+            [0x91, 0xfb]
+        );
+    }
+
+    #[test]
+    fn matches_documented_v2_command_crc() {
+        // NC -> Basic, broadcast to both TX example from the protocol spec;
+        // last two bytes are CRC.
+        let full: &[u8] = &[
+            0x55, 0x16, 0x04, 0xfc, 0x02, 0x5a, 0x40, 0xb6, 0x40, 0x5b, 0x01,
+            0x02, 0xff, 0xff, 0x00, 0x00, 0x37, 0x00, 0x01, 0x00, 0xdd, 0xe2,
+        ];
+        assert!(verify(full, V2_INIT, V2_RESIDUE));
+        assert_eq!(
+            crc_bytes(&full[..full.len() - 2], V2_INIT, V2_RESIDUE),
+            [0xdd, 0xe2]
+        );
     }
 }

@@ -1,6 +1,7 @@
 <script>
   import DevicePicto from "./DevicePicto.svelte";
   import SettingControl from "./SettingControl.svelte";
+  import NoiseCancelControl from "./NoiseCancelControl.svelte";
 
   let {
     device,
@@ -14,12 +15,39 @@
   } = $props();
 
   // Audio levels sit roughly in the 0x14–0x4f range; scale to a full bar.
-  const levelPct = (v) => Math.max(0, Math.min(100, Math.round((v / 80) * 100)));
+  // `v` is null when the connected firmware hasn't reported a level yet.
+  const levelPct = (v) => (v == null ? 0 : Math.max(0, Math.min(100, Math.round((v / 80) * 100))));
+
+  // Identity/level fields the model hasn't decoded yet read as null.
+  const orUnknown = (v) => v ?? "Unknown";
+
+  // Noise Cancel's three settings render as one combined element (see
+  // NoiseCancelControl) rather than three separate rows. Collapse them into
+  // a single placeholder, at the position the first of them would have
+  // occupied, before grouping/columning.
+  const NC_IDS = new Set(["noise-cancel", "noise-cancel-power", "noise-cancel-button"]);
+  const renderSettings = $derived.by(() => {
+    const out = [];
+    let ncInserted = false;
+    for (const s of settings) {
+      if (NC_IDS.has(s.id)) {
+        if (!ncInserted) {
+          out.push({ id: "__nc-group", group: s.group, __ncComposite: true });
+          ncInserted = true;
+        }
+        continue;
+      }
+      out.push(s);
+    }
+    return out;
+  });
+
+  const settingsById = $derived(Object.fromEntries(settings.map((s) => [s.id, s])));
 
   // Cluster settings by their declared group, preserving first-seen order.
   const groups = $derived.by(() => {
     const map = new Map();
-    for (const s of settings) {
+    for (const s of renderSettings) {
       if (!map.has(s.group)) map.set(s.group, []);
       map.get(s.group).push(s);
     }
@@ -51,13 +79,32 @@
 
   // Why a setting is locked, or null if it is freely settable.
   function lockReason(s) {
-    // NC mode is meaningless unless NC is enabled (physical button on the TX).
-    if (s.id === "noise-cancel" && status.nc_enabled === false) {
-      return "Turn on Noise Cancel using the button on the transmitter";
+    // Settings v2 firmware introduced don't exist on a v1 device at all.
+    // "noise-cancel-power" still shows its real value there (see the
+    // decoder) since v1 firmware reports it, just via the TX's button
+    // rather than a settable command.
+    if (status.protocol_version === 1 && s.v1_command == null) {
+      return "Requires protocol v2, please update your firmware";
     }
-    // Mutually exclusive settings lock each other while active.
+    // NC mode is meaningless unless NC is enabled — on v2 firmware that's a
+    // toggle in its own right; on v1 firmware it's only the TX's button.
+    if (s.id === "noise-cancel" && status.nc_enabled === false) {
+      const toggle = labelById["noise-cancel-power"];
+      return toggle
+        ? `Turn on "${toggle}" first`
+        : "Turn on Noise Cancel using the button on the transmitter";
+    }
+    // Mutually exclusive settings lock each other while active. Audio
+    // Channels is an enum ("mono"/"stereo"), not a switch, so its "active"
+    // value isn't the usual "on".
     for (const other of s.exclusive_with ?? []) {
-      if (values[other] === "on") return `Turn off ${labelById[other] ?? other} first`;
+      if (other === "stereo") {
+        if (values.stereo === "stereo") {
+          return `Switch "${labelById.stereo ?? "Audio Channels"}" to Mono first`;
+        }
+      } else if (values[other] === "on") {
+        return `Turn off ${labelById[other] ?? other} first`;
+      }
     }
     return null;
   }
@@ -82,15 +129,19 @@
         <DevicePicto pictogram={`${device.pictogram_key}-rx`} size={40} />
       </div>
       {#if status.rx}
-        <div class="kv"><span>Serial</span><b>{status.rx.serial}</b></div>
-        <div class="kv"><span>Firmware</span><b>{status.rx.firmware}</b></div>
+        <div class="kv"><span>Serial</span><b>{orUnknown(status.rx.serial)}</b></div>
+        <div class="kv"><span>Firmware</span><b>{orUnknown(status.rx.firmware)}</b></div>
       {:else}
         <div class="muted">No data</div>
       {/if}
-      <div class="kv">
-        <span>Noise Cancelling</span>
-        <b class={status.nc_enabled ? "good" : "muted"}>{status.nc_enabled ? "On" : "Off"}</b>
-      </div>
+      {#if status.protocol_version}
+        <div class="kv">
+          <span>Protocol</span>
+          <span class="proto-pill" class:v1={status.protocol_version === 1} class:v2={status.protocol_version === 2}>
+            v{status.protocol_version}
+          </span>
+        </div>
+      {/if}
     </div>
 
     {#each status.tx as tx, i}
@@ -100,8 +151,8 @@
           <DevicePicto pictogram={`${device.pictogram_key}-tx`} size={38} />
         </div>
         {#if tx}
-          <div class="kv"><span>Serial</span><b>{tx.serial}</b></div>
-          <div class="kv"><span>Firmware</span><b>{tx.firmware}</b></div>
+          <div class="kv"><span>Serial</span><b>{orUnknown(tx.serial)}</b></div>
+          <div class="kv"><span>Firmware</span><b>{orUnknown(tx.firmware)}</b></div>
           <div class="level">
             <span class="lvl-label">Level</span>
             <div class="meter">
@@ -125,15 +176,27 @@
 
   {#if view === "list"}
     <section class="settings">
-      {#each settings as s (s.id)}
-        <SettingControl
-          setting={s}
-          value={values[s.id] ?? null}
-          pending={!!pending[s.id]}
-          locked={!!lockReason(s)}
-          lockReason={lockReason(s) ?? ""}
-          {onchange}
-        />
+      {#each renderSettings as s (s.id)}
+        {#if s.__ncComposite}
+          <NoiseCancelControl
+            power={settingsById["noise-cancel-power"]}
+            mode={settingsById["noise-cancel"]}
+            button={settingsById["noise-cancel-button"]}
+            {values}
+            {pending}
+            {lockReason}
+            {onchange}
+          />
+        {:else}
+          <SettingControl
+            setting={s}
+            value={values[s.id] ?? null}
+            pending={!!pending[s.id]}
+            locked={!!lockReason(s)}
+            lockReason={lockReason(s) ?? ""}
+            {onchange}
+          />
+        {/if}
       {/each}
     </section>
   {:else}
@@ -145,15 +208,28 @@
               <div class="group-title">{name}</div>
               <div class="group-grid">
                 {#each items as s (s.id)}
-                  <SettingControl
-                    setting={s}
-                    value={values[s.id] ?? null}
-                    pending={!!pending[s.id]}
-                    locked={!!lockReason(s)}
-                    lockReason={lockReason(s) ?? ""}
-                    compact
-                    {onchange}
-                  />
+                  {#if s.__ncComposite}
+                    <NoiseCancelControl
+                      power={settingsById["noise-cancel-power"]}
+                      mode={settingsById["noise-cancel"]}
+                      button={settingsById["noise-cancel-button"]}
+                      {values}
+                      {pending}
+                      {lockReason}
+                      compact
+                      {onchange}
+                    />
+                  {:else}
+                    <SettingControl
+                      setting={s}
+                      value={values[s.id] ?? null}
+                      pending={!!pending[s.id]}
+                      locked={!!lockReason(s)}
+                      lockReason={lockReason(s) ?? ""}
+                      compact
+                      {onchange}
+                    />
+                  {/if}
                 {/each}
               </div>
             </div>
@@ -240,6 +316,27 @@
     text-transform: uppercase;
     color: var(--text-faint);
   }
+  /* Wire protocol version: v1 firmware in blue, v2 firmware in purple, in
+     the same pill style as the Connected badge. */
+  .proto-pill {
+    font-size: 10px;
+    font-weight: 700;
+    padding: 1px 7px;
+    border-radius: 999px;
+    background: var(--bg-elev);
+    color: var(--text-dim);
+    border: 1px solid var(--border);
+  }
+  .proto-pill.v1 {
+    color: var(--accent);
+    border-color: color-mix(in srgb, var(--accent) 40%, transparent);
+    background: color-mix(in srgb, var(--accent) 12%, transparent);
+  }
+  .proto-pill.v2 {
+    color: #a855f7;
+    border-color: color-mix(in srgb, #a855f7 40%, transparent);
+    background: color-mix(in srgb, #a855f7 12%, transparent);
+  }
   .kv {
     display: flex;
     justify-content: space-between;
@@ -256,9 +353,6 @@
   }
   .muted {
     color: var(--text-faint);
-  }
-  .good {
-    color: var(--good);
   }
   .level {
     margin-top: 8px;

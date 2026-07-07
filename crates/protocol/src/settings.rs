@@ -40,8 +40,17 @@ pub struct Setting {
     pub group: &'static str,
     /// Presentation hint.
     pub kind: SettingKind,
-    /// 16-bit command id used to write this setting.
-    pub command: u16,
+    /// 16-bit command id used to write this setting on v1 firmware's 19-byte
+    /// command shape. `None` if the setting doesn't exist there (it was
+    /// introduced by the v2 firmware update).
+    pub v1_command: Option<u16>,
+    /// Command id used to write this setting inside v2 firmware's
+    /// target-addressed 22-byte command shape. Every setting is reachable
+    /// this way.
+    pub v2_command: u16,
+    /// Target unit for [`v2_command`](Self::v2_command): the receiver itself
+    /// (`0x0000`) or a broadcast to every connected transmitter (`0xffff`).
+    pub v2_target: u16,
     /// Allowed options, in display order.
     pub options: &'static [SettingOption],
     /// Ids of settings this one is mutually exclusive with: when any of them is

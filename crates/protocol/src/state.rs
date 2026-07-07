@@ -26,19 +26,26 @@ impl Serialize for Firmware {
 }
 
 /// State of one connected transmitter.
+///
+/// `level`, `serial`, and `firmware` are `None` when the model can tell a
+/// transmitter is connected but hasn't learned its identity/level data yet.
+/// On v2 firmware these arrive in separate periodic pushes from the compact
+/// status heartbeat (see `PROTOCOL.md`), so there's a brief window after
+/// connecting before they're known.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct TxInfo {
     /// Live audio input level (raw device units).
-    pub level: u8,
-    pub serial: String,
-    pub firmware: Firmware,
+    pub level: Option<u8>,
+    pub serial: Option<String>,
+    pub firmware: Option<Firmware>,
 }
 
-/// State of the receiver.
+/// State of the receiver. `serial`/`firmware` are `None` when not yet known
+/// (see [`TxInfo`]).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct RxInfo {
-    pub serial: String,
-    pub firmware: Firmware,
+    pub serial: Option<String>,
+    pub firmware: Option<Firmware>,
 }
 
 /// A model-agnostic snapshot of a device's current state.
@@ -56,6 +63,10 @@ pub struct DeviceStatus {
     pub rx: Option<RxInfo>,
     /// Current value slug of every writable setting, keyed by setting id.
     pub settings: BTreeMap<String, String>,
+    /// The wire protocol version in use, once known from a decoded frame:
+    /// `1` for v1 firmware, `2` for v2 firmware (see `PROTOCOL.md`'s
+    /// "Protocol versions" section). `None` before the first frame decodes.
+    pub protocol_version: Option<u8>,
 }
 
 impl DeviceStatus {
@@ -68,6 +79,7 @@ impl DeviceStatus {
             tx: [None, None],
             rx: None,
             settings: BTreeMap::new(),
+            protocol_version: None,
         }
     }
 

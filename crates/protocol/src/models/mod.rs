@@ -10,7 +10,7 @@ mod mic_mini;
 
 pub use mic_mini::MicMini;
 
-use crate::packet;
+use crate::packet::{self, Dialect};
 use crate::settings::Setting;
 use crate::state::DeviceStatus;
 
@@ -42,20 +42,46 @@ pub trait DeviceModel: Send + Sync {
     /// The settings this model exposes.
     fn settings(&self) -> &'static [Setting];
 
-    /// Build a command packet setting `setting_id` to the option `value`.
+    /// Build a command packet setting `setting_id` to the option `value`, in
+    /// the wire shape `dialect` calls for.
     ///
     /// The default implementation frames a standard DUML command from the
-    /// setting's command id and the option's wire byte. Returns `None` if the
-    /// setting or value is unknown.
-    fn build_command(&self, seq: u16, setting_id: &str, value: &str) -> Option<Vec<u8>> {
+    /// setting's command id(s) and the option's wire byte. Returns `None` if
+    /// the setting or value is unknown, or if `setting_id` doesn't exist under
+    /// `dialect` (e.g. a v2-only setting requested in [`Dialect::V1`]).
+    fn build_command(
+        &self,
+        seq: u16,
+        dialect: Dialect,
+        setting_id: &str,
+        value: &str,
+    ) -> Option<Vec<u8>> {
         let setting = self.settings().iter().find(|s| s.id == setting_id)?;
         let option = setting.option(value)?;
-        Some(packet::build_command(seq, setting.command, option.wire))
+        match dialect {
+            Dialect::V1 => {
+                let command = setting.v1_command?;
+                Some(packet::build_v1_command(seq, command, option.wire))
+            }
+            Dialect::V2 => Some(packet::build_v2_command(
+                seq,
+                setting.v2_target,
+                setting.v2_command,
+                option.wire,
+            )),
+        }
     }
 
-    /// Decode a device→host frame into a status snapshot, or `None` if the frame
-    /// is not a heartbeat this model understands.
-    fn decode(&self, frame: &[u8]) -> Option<DeviceStatus>;
+    /// Decode a device→host frame, or `None` if it's not one this model
+    /// understands.
+    ///
+    /// `previous` is the status as of the last decoded frame. Most dialects
+    /// push one self-sufficient snapshot per heartbeat and can ignore it, but
+    /// some (see `PROTOCOL.md`'s v2 identity/level pushes) split a single
+    /// logical status across several periodic frame types; those need
+    /// `previous` to carry forward what this particular frame doesn't carry,
+    /// rather than reverting it to unknown on every tick.
+    fn decode(&self, previous: &DeviceStatus, frame: &[u8]) -> Option<DeviceStatus>;
 }
 
 /// Every supported model.

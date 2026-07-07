@@ -159,7 +159,7 @@ impl DeviceManager {
                     model_name: h.model.name().to_string(),
                     pictogram_key: h.model.pictogram_key().to_string(),
                     connected: live,
-                    rx_serial: st.rx.as_ref().map(|r| r.serial.clone()),
+                    rx_serial: st.rx.as_ref().and_then(|r| r.serial.clone()),
                 }
             })
             .collect();

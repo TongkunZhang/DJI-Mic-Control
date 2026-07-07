@@ -156,6 +156,12 @@ fn get(status: &DeviceStatus, setting: &str, json: bool) -> Result<()> {
     Ok(())
 }
 
+/// Render an optional identity/level field, e.g. a TX's serial when the
+/// connected firmware hasn't reported it yet (see `PROTOCOL.md`).
+fn unknown<T: std::fmt::Display>(v: &Option<T>) -> String {
+    v.as_ref().map(|v| v.to_string()).unwrap_or_else(|| "unknown".to_string())
+}
+
 fn print_status(mgr: &DeviceManager, id: &str, status: &DeviceStatus, json: bool) -> Result<()> {
     if json {
         println!("{}", serde_json::to_string_pretty(status)?);
@@ -164,16 +170,16 @@ fn print_status(mgr: &DeviceManager, id: &str, status: &DeviceStatus, json: bool
 
     println!("Device:  {id}  ({})", status.model_id);
     if let Some(rx) = &status.rx {
-        println!("Receiver: serial {}  fw {}", rx.serial, rx.firmware);
+        println!("Receiver: serial {}  fw {}", unknown(&rx.serial), unknown(&rx.firmware));
     }
     for (i, tx) in status.tx.iter().enumerate() {
         match tx {
             Some(t) => println!(
                 "TX{}:      serial {}  fw {}  level {}",
                 i + 1,
-                t.serial,
-                t.firmware,
-                t.level
+                unknown(&t.serial),
+                unknown(&t.firmware),
+                unknown(&t.level)
             ),
             None => println!("TX{}:      (off)", i + 1),
         }

@@ -13,6 +13,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use futures_lite::future;
 use nusb::transfer::RequestBuffer;
 use nusb::Interface;
+use protocol::packet::Dialect;
 use protocol::{packet, DeviceModel, DeviceStatus};
 
 use crate::error::{DeviceError, Result};
@@ -81,6 +82,10 @@ async fn run(
     let mut seq: u16 = 1;
     let mut buf: Vec<u8> = Vec::with_capacity(1024);
     let debug = std::env::var_os("DJIMIC_DEBUG").is_some();
+    // Learned from the first heartbeat; defaults to v2 since a command sent
+    // before any heartbeat arrives is the rare case (heartbeats stream
+    // continuously as soon as the device is opened).
+    let mut dialect = Dialect::V2;
 
     loop {
         let read = iface.bulk_in(ep_in, RequestBuffer::new(512));
@@ -105,23 +110,27 @@ async fn run(
                 }
                 buf.extend_from_slice(&comp.data);
                 while let Some(frame) = packet::take_frame(&mut buf) {
-                    let decoded = model.decode(&frame).is_some();
+                    if let Some(d) = packet::heartbeat_dialect(&frame) {
+                        dialect = d;
+                    }
+                    let previous = status.lock().unwrap().clone();
+                    let new_status = model.decode(&previous, &frame);
                     if debug {
                         eprintln!(
                             "[frame] kind={:?} decoded={} {}",
                             packet::frame_kind(&frame),
-                            decoded,
+                            new_status.is_some(),
                             hex(&frame),
                         );
                     }
-                    if let Some(new_status) = model.decode(&frame) {
+                    if let Some(new_status) = new_status {
                         *status.lock().unwrap() = new_status;
                         last_seen.store(now_millis(), Ordering::Relaxed);
                     }
                 }
             }
             Wake::Command(Ok(cmd)) => {
-                let result = match model.build_command(seq, &cmd.setting_id, &cmd.value) {
+                let result = match model.build_command(seq, dialect, &cmd.setting_id, &cmd.value) {
                     Some(pkt) => {
                         seq = seq.wrapping_add(1);
                         let comp = iface.bulk_out(ep_out, pkt).await;
