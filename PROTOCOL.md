@@ -253,8 +253,8 @@ them: `& 0x20` set → present, `& 0x40` set → absent. Slot 0 is TX1, slot 1 i
 | +2          | 1   | Audio input level                                              |
 | +3          | 1   | LED flags — bit `0x80` set = LEDs off                          |
 | +4          | 4   | Firmware version (one byte per component, decimal)             |
-| +8          | 2   | Constant `0e 38`                                               |
-| +10         | 13  | Transmitter serial number (ASCII)                              |
+| +8          | 1   | Constant `0x0e`                                                |
+| +9          | 14  | Transmitter serial number (ASCII)                              |
 
 **Absent TX stub (9 bytes):** `+0` state byte, `+1` TX flags, `+2`..`+8` zero.
 The state and flags bytes are valid even in a stub.
@@ -314,9 +314,9 @@ b0 25 38 00 01 01 00 38 0e 38 53 4e 54 58 32 30 30 30 30 30 30   TX2
 
 Decoded:
 
-- TX1 — state `0xb0` (Strong NC, low cut off), level `0x38`, serial `SNTX100000000`,
+- TX1 — state `0xb0` (Strong NC, low cut off), level `0x38`, serial `8SNTX100000000`,
   firmware `01.01.00.56`.
-- TX2 — serial `SNTX200000000`.
+- TX2 — serial `8SNTX200000000`.
 - RX — flags `0x32`/`0x20` (auto-off on, clip on, others off), serial
   `SNRX0000000000`, plug-free off.
 

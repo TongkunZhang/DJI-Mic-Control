@@ -254,7 +254,7 @@ fn parse_v1_slot(f: &[u8], off: usize) -> Option<V1Slot> {
         let level = f[off + 2];
         let led_off = Some(f[off + 3] & 0x80 != 0);
         let firmware = read_firmware(&f[off + 4..off + 8]);
-        let serial = read_serial(&f[off + 10..off + 23]);
+        let serial = read_serial(&f[off + 9..off + 23]);
         Some(V1Slot {
             tx: Some(TxInfo { level: Some(level), serial: Some(serial), firmware: Some(firmware) }),
             state,
@@ -560,10 +560,10 @@ mod tests {
         let body: Vec<u8> = vec![
             0x55, 0x54, 0x04, 0xf6, 0x5a, 0x02, 0x0e, 0x79, 0x00, 0x5b, 0x03,
             0x00, 0x47, 0x00, // header
-            // TX1, serial "SNTX100000000"
+            // TX1, serial "8SNTX100000000"
             0xb0, 0x25, 0x38, 0x00, 0x01, 0x01, 0x00, 0x38, 0x0e, 0x38, 0x53,
             0x4e, 0x54, 0x58, 0x31, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30,
-            0x30, // TX2, serial "SNTX200000000"
+            0x30, // TX2, serial "8SNTX200000000"
             0xb0, 0x25, 0x38, 0x00, 0x01, 0x01, 0x00, 0x38, 0x0e, 0x38, 0x53,
             0x4e, 0x54, 0x58, 0x32, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30,
             0x30, // RX, serial "SNRX0000000000"
@@ -581,9 +581,9 @@ mod tests {
         assert_eq!(st.protocol_version, Some(1));
         assert_eq!(st.tx_count(), 2);
         let tx1 = st.tx[0].as_ref().unwrap();
-        assert_eq!(tx1.serial.as_deref(), Some("SNTX100000000"));
+        assert_eq!(tx1.serial.as_deref(), Some("8SNTX100000000"));
         assert_eq!(tx1.firmware.unwrap().to_string(), "01.01.00.56");
-        assert_eq!(st.tx[1].as_ref().unwrap().serial.as_deref(), Some("SNTX200000000"));
+        assert_eq!(st.tx[1].as_ref().unwrap().serial.as_deref(), Some("8SNTX200000000"));
         assert_eq!(st.rx.as_ref().unwrap().serial.as_deref(), Some("SNRX0000000000"));
         // state 0xb0 -> Strong NC (0x20 set), low cut clear.
         assert_eq!(st.settings["noise-cancel"], "strong");
