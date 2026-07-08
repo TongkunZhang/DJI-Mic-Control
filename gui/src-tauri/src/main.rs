@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use device::DeviceManager;
 use tauri::image::Image;
-use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem};
+use tauri::menu::{CheckMenuItem, IsMenuItem, Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::TrayIconBuilder;
 use tauri::{AppHandle, Manager, Wry, WindowEvent};
 use tauri_plugin_autostart::ManagerExt;
@@ -89,32 +89,35 @@ fn show_main(app: &AppHandle) {
 }
 
 /// What the tray menu reflects: whether to show the per-device toggles (exactly
-/// one mic connected), the current NC mode and LED state, and whether "Start at
-/// login" is enabled. Compared each tick so the menu is only rebuilt on change.
-type MenuState = (bool, Option<String>, Option<String>, bool);
+/// one mic connected), the current NC mode, NC power, LED state, the connected
+/// device's protocol version, and whether "Start at login" is enabled.
+/// Compared each tick so the menu is only rebuilt on change.
+type MenuState = (bool, Option<String>, Option<String>, Option<String>, Option<u8>, bool);
 
 /// Read the current menu-relevant state.
 fn menu_state(app: &AppHandle) -> MenuState {
     let autostart = app.autolaunch().is_enabled().unwrap_or(false);
     let mgr = app.state::<Arc<DeviceManager>>().inner().clone();
     if mgr.list().len() != 1 {
-        return (false, None, None, autostart);
+        return (false, None, None, None, None, autostart);
     }
     match pick_device(&mgr).and_then(|id| mgr.status(&id).ok()) {
         Some(st) => (
             true,
             st.settings.get("noise-cancel").cloned(),
+            st.settings.get("noise-cancel-power").cloned(),
             st.settings.get("mic-leds").cloned(),
+            st.protocol_version,
             autostart,
         ),
-        None => (true, None, None, autostart),
+        None => (true, None, None, None, None, autostart),
     }
 }
 
 /// Build the tray menu. The per-device toggles appear only when exactly one mic
 /// is connected, and their labels show the current mode and what tapping does.
 fn build_menu(app: &AppHandle, state: &MenuState) -> tauri::Result<Menu<Wry>> {
-    let (show, nc, led, autostart) = state;
+    let (show, nc, nc_power, led, protocol_version, autostart) = state;
     let open = MenuItem::with_id(app, "open", "Open DJI Mic Control", true, None::<&str>)?;
     let startup = CheckMenuItem::with_id(
         app,
@@ -142,10 +145,26 @@ fn build_menu(app: &AppHandle, state: &MenuState) -> tauri::Result<Menu<Wry>> {
         let leds = MenuItem::with_id(app, "toggle-leds", led_label, true, None::<&str>)?;
         let nc = MenuItem::with_id(app, "toggle-nc", nc_label, true, None::<&str>)?;
         let sep_c = PredefinedMenuItem::separator(app)?;
-        Menu::with_items(
-            app,
-            &[&open, &sep_a, &leds, &nc, &sep_b, &startup, &sep_c, &quit],
-        )
+
+        // Enabling/disabling NC outright (as opposed to its Basic/Strong mode)
+        // is only settable over the wire on v2 firmware — v1 only reports it,
+        // toggled by the TX's physical button (see `noise-cancel-power` in
+        // `settings.rs`).
+        let nc_power_label = match nc_power.as_deref() {
+            Some("on") => "Noise Cancelling: On  →  Off",
+            Some("off") => "Noise Cancelling: Off  →  On",
+            _ => "Toggle Noise Cancelling",
+        };
+        let nc_power_item = (*protocol_version == Some(2))
+            .then(|| MenuItem::with_id(app, "toggle-nc-power", nc_power_label, true, None::<&str>))
+            .transpose()?;
+
+        let mut items: Vec<&dyn IsMenuItem<Wry>> = vec![&open, &sep_a, &leds, &nc];
+        if let Some(item) = &nc_power_item {
+            items.push(item);
+        }
+        items.extend([&sep_b as &dyn IsMenuItem<Wry>, &startup, &sep_c, &quit]);
+        Menu::with_items(app, &items)
     } else {
         Menu::with_items(app, &[&open, &sep_a, &startup, &sep_b, &quit])
     }
@@ -329,6 +348,12 @@ fn main() {
                         let mgr = app.state::<Arc<DeviceManager>>().inner().clone();
                         std::thread::spawn(move || {
                             toggle_between(&mgr, "noise-cancel", "strong", "basic")
+                        });
+                    }
+                    "toggle-nc-power" => {
+                        let mgr = app.state::<Arc<DeviceManager>>().inner().clone();
+                        std::thread::spawn(move || {
+                            toggle_between(&mgr, "noise-cancel-power", "on", "off")
                         });
                     }
                     "toggle-autostart" => {
