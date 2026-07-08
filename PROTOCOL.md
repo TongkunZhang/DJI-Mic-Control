@@ -412,6 +412,13 @@ present.
 | +8          | Flags: `0x04` clip limiter active (mirror of offset-48 bit `0x10`)    |
 | +9          | Flags: `0x20` low cut active                                          |
 
+Nothing in this slot (or elsewhere in the status push) says *which* physical
+transmitter (TX1 or TX2) a slot belongs to when only one is connected — the
+slot list is simply compacted to however many are present. That mapping is
+only ever learned from the identity/level pushes below, which carry an
+explicit physical unit index. A decoder that assumes a lone connected
+transmitter is always TX1 will misattribute TX2-only connections.
+
 ### Identity and audio-level pushes: shared record format
 
 Both push types are a sequence of records starting at offset 14 (offsets

@@ -337,6 +337,41 @@ fn decode_v1(f: &[u8]) -> Option<DeviceStatus> {
 const V2_HEADER_LEN: usize = 52;
 const V2_TX_SLOT_LEN: usize = 32;
 
+/// Reconcile the two TX slots against a fresh connected-count, without
+/// assuming a lone connected transmitter is always TX1 (array index 0).
+///
+/// Slots already holding data are left untouched. If the count grew, the
+/// new arrival is parked in the lowest empty slot as "connected but
+/// unidentified" until `decode_v2_records` places its real data in its
+/// actual slot. If the count shrank, the least-informative slot (no
+/// identity/level data yet) is dropped first, since that's most likely the
+/// placeholder rather than a transmitter that was actually known; if every
+/// remaining slot already has real data, there's no way to tell which one
+/// disconnected, so the higher-indexed slot is dropped as a last resort.
+fn merge_tx_slots(previous: &[Option<TxInfo>; 2], tx_count: usize) -> [Option<TxInfo>; 2] {
+    let mut tx = previous.clone();
+    let mut known: Vec<usize> = (0..2).filter(|&i| tx[i].is_some()).collect();
+
+    while known.len() > tx_count {
+        let pos = known
+            .iter()
+            .position(|&i| {
+                let t = tx[i].as_ref().unwrap();
+                t.serial.is_none() && t.level.is_none() && t.firmware.is_none()
+            })
+            .unwrap_or(known.len() - 1);
+        let i = known.remove(pos);
+        tx[i] = None;
+    }
+    while known.len() < tx_count {
+        let i = (0..2).find(|&i| tx[i].is_none()).expect("tx_count is at most 2");
+        tx[i] = Some(TxInfo { level: None, serial: None, firmware: None });
+        known.push(i);
+    }
+
+    tx
+}
+
 /// Decode a v2 status push.
 ///
 /// Returns `None` for anything of this dialect that isn't a status push (the
@@ -366,16 +401,14 @@ fn decode_v2_status(previous: &DeviceStatus, f: &[u8]) -> Option<DeviceStatus> {
     let mut status = DeviceStatus::disconnected(MODEL_ID);
     status.connected = true;
     status.nc_enabled = flags1 & 0x20 != 0;
-    // A slot's identity/level is only ever known from the separate identity
-    // and audio-level pushes; carry forward whatever we already learned for
-    // transmitters that are still connected, and drop it for ones that aren't.
-    status.tx = std::array::from_fn(|i| {
-        (i < tx_count).then(|| previous.tx[i].clone().unwrap_or(TxInfo {
-            level: None,
-            serial: None,
-            firmware: None,
-        }))
-    });
+    // The status push only carries a *count* of connected transmitters, not
+    // which physical slot(s) they occupy — slot identity is only ever learned
+    // from the separate identity/level pushes (`decode_v2_records`), which
+    // key off the real physical index. So already-populated slots are kept in
+    // place rather than being re-guessed on every tick; a newly-connected,
+    // not-yet-identified transmitter is parked in the lowest empty slot until
+    // an identity/level push relocates its data to the right one.
+    status.tx = merge_tx_slots(&previous.tx, tx_count);
     status.rx =
         Some(previous.rx.clone().unwrap_or(RxInfo { serial: None, firmware: None }));
 
@@ -770,6 +803,38 @@ mod tests {
         // The flags themselves still decode normally alongside the carried-
         // forward identity/level.
         assert_eq!(status_push.settings["noise-cancel"], "strong");
+    }
+
+    #[test]
+    fn merge_tx_slots_relocates_solo_transmitter_by_identity() {
+        // A lone transmitter connects before its identity is known: the
+        // status push parks it in the lowest empty slot (0) as a placeholder.
+        let none: [Option<TxInfo>; 2] = [None, None];
+        let after_status = merge_tx_slots(&none, 1);
+        assert!(after_status[0].is_some());
+        assert!(after_status[1].is_none());
+
+        // Its identity/level push then arrives at its *real* physical slot
+        // (1, i.e. TX2), leaving the placeholder in slot 0 untouched — this
+        // is exactly what happens when TX2 is the one actually connected.
+        let mut with_identity = after_status;
+        with_identity[1] = Some(TxInfo {
+            level: Some(0x30),
+            serial: Some("8SNTX400000000".into()),
+            firmware: None,
+        });
+
+        // The next status tick (still tx_count == 1) must drop the stale,
+        // data-less placeholder in slot 0 rather than the real data in slot
+        // 1 — previously it did the opposite, permanently: it kept forcing
+        // slot 0 back to "connected" and slot 1 back to `None` every tick.
+        let reconciled = merge_tx_slots(&with_identity, 1);
+        assert!(reconciled[0].is_none());
+        assert_eq!(reconciled[1].as_ref().unwrap().serial.as_deref(), Some("8SNTX400000000"));
+
+        // And it stays stable on subsequent ticks instead of flapping.
+        let stable = merge_tx_slots(&reconciled, 1);
+        assert_eq!(stable, reconciled);
     }
 
     #[test]
