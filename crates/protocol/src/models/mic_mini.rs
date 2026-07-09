@@ -237,7 +237,7 @@ fn read_firmware(b: &[u8]) -> Firmware {
     Firmware([b[0], b[1], b[2], b[3]])
 }
 
-fn read_serial(b: &[u8]) -> String {
+fn read_ascii_field(b: &[u8]) -> String {
     let end = b.iter().position(|&c| c == 0).unwrap_or(b.len());
     String::from_utf8_lossy(&b[..end]).trim().to_string()
 }
@@ -254,9 +254,14 @@ fn parse_v1_slot(f: &[u8], off: usize) -> Option<V1Slot> {
         let level = f[off + 2];
         let led_off = Some(f[off + 3] & 0x80 != 0);
         let firmware = read_firmware(&f[off + 4..off + 8]);
-        let serial = read_serial(&f[off + 9..off + 23]);
+        let serial = read_ascii_field(&f[off + 9..off + 23]);
         Some(V1Slot {
-            tx: Some(TxInfo { level: Some(level), serial: Some(serial), firmware: Some(firmware) }),
+            tx: Some(TxInfo {
+                level: Some(level),
+                serial: Some(serial),
+                firmware: Some(firmware),
+                product_name: None,
+            }),
             state,
             flags,
             led_off,
@@ -298,7 +303,7 @@ fn decode_v1(f: &[u8]) -> Option<DeviceStatus> {
     let rx_flags1 = f[rx_off + 1];
     let rx = RxInfo {
         firmware: Some(read_firmware(&f[rx_off + 2..rx_off + 6])),
-        serial: Some(read_serial(&f[rx_off + 7..rx_off + 21])),
+        serial: Some(read_ascii_field(&f[rx_off + 7..rx_off + 21])),
     };
     let plug_free_on = f[rx_off + 21] == 0x01;
 
@@ -387,7 +392,12 @@ fn decode_v2_status(previous: &DeviceStatus, f: &[u8]) -> Option<DeviceStatus> {
         let slot_off = V2_HEADER_LEN + V2_TX_SLOT_LEN * slot_pos;
         let Some(i) = tx_slot_unit(f, slot_off) else { continue };
         status.tx[i] =
-            Some(previous.tx[i].clone().unwrap_or(TxInfo { level: None, serial: None, firmware: None }));
+            Some(previous.tx[i].clone().unwrap_or(TxInfo {
+                level: None,
+                serial: None,
+                firmware: None,
+                product_name: None,
+            }));
     }
     status.rx =
         Some(previous.rx.clone().unwrap_or(RxInfo { serial: None, firmware: None }));
@@ -426,9 +436,11 @@ fn decode_v2_status(previous: &DeviceStatus, f: &[u8]) -> Option<DeviceStatus> {
 // - `0x05` (audio-level push): one-byte data is the live input level. Unit
 //   index is `1`/`2` for transmitter slot 0/1 (1-based, unlike the identity
 //   push's 0-based index).
-// - `0x04` (a 6-character hex-like id) and `0x06` (product name, e.g. `DJI Mic
-//   Mini`) also appear in the identity push but aren't modelled by
-//   `DeviceStatus` and are skipped.
+// - `0x06` (product name, e.g. `DJI Mic Mini` or `DJI Mic Mini 2`):
+//   variable-length ASCII, length matching the record's own length byte.
+//   Same unit index convention as `0x01`; only TX (`1`/`2`) is modelled.
+// - `0x04` (a 6-character hex-like id) also appears in the identity push but
+//   isn't modelled by `DeviceStatus` and is skipped.
 const RECORDS_START: usize = 14;
 const RECORD_HEADER_LEN: usize = 6;
 
@@ -458,7 +470,7 @@ fn decode_v2_records(previous: &DeviceStatus, f: &[u8]) -> Option<DeviceStatus> 
                 // component last (i.e. reversed relative to how it reads);
                 // the serial is whatever follows.
                 let firmware = Firmware([data[3], data[2], data[1], data[0]]);
-                let serial = read_serial(&data[4..]);
+                let serial = read_ascii_field(&data[4..]);
                 match index {
                     0 => {
                         let rx = status.rx.get_or_insert(RxInfo { serial: None, firmware: None });
@@ -472,6 +484,7 @@ fn decode_v2_records(previous: &DeviceStatus, f: &[u8]) -> Option<DeviceStatus> 
                                 level: None,
                                 serial: None,
                                 firmware: None,
+                                product_name: None,
                             });
                             tx.serial = Some(serial);
                             tx.firmware = Some(firmware);
@@ -488,8 +501,22 @@ fn decode_v2_records(previous: &DeviceStatus, f: &[u8]) -> Option<DeviceStatus> 
                         level: None,
                         serial: None,
                         firmware: None,
+                        product_name: None,
                     })
                     .level = Some(data[0]);
+                }
+                matched = true;
+            }
+            0x06 if index == 1 || index == 2 => {
+                let i = (index - 1) as usize;
+                if let Some(slot) = status.tx.get_mut(i) {
+                    slot.get_or_insert_with(|| TxInfo {
+                        level: None,
+                        serial: None,
+                        firmware: None,
+                        product_name: None,
+                    })
+                    .product_name = Some(read_ascii_field(data));
                 }
                 matched = true;
             }
@@ -706,6 +733,16 @@ mod tests {
         crate::crc::append(hex_body(hex), crate::crc::V2_INIT, crate::crc::V2_RESIDUE)
     }
 
+    /// A synthetic receiver + one transmitter identity push (124 bytes), CRC
+    /// stripped, where the transmitter's product-name record is the
+    /// variable-length `"DJI Mic Mini 2"` (14 bytes) rather than the usual
+    /// `"DJI Mic Mini"` (12 bytes) — the record's own length byte differs
+    /// accordingly.
+    fn sample_identity_rx_and_tx_v2_model() -> Vec<u8> {
+        let hex = "557e040000000000005b0303000001000000001200110302444444444444444444444444444404000000000637626165386606000000000c444a49204d6963204d696e69010100000012000b0302454545454545454545454545454504010000000661376330313206010000000e444a49204d6963204d696e692032";
+        crate::crc::append(hex_body(hex), crate::crc::V2_INIT, crate::crc::V2_RESIDUE)
+    }
+
     /// A synthetic 2-TX audio-level push (30 bytes), CRC stripped.
     fn sample_level_2tx() -> Vec<u8> {
         let hex = "551e048a5a020000005b03030e000501000000013005020000000130";
@@ -727,6 +764,7 @@ mod tests {
         let tx1 = st.tx[0].as_ref().unwrap();
         assert_eq!(tx1.serial.as_deref(), Some("EEEEEEEEEEEEEE"));
         assert_eq!(tx1.firmware.unwrap().to_string(), "02.03.17.00");
+        assert_eq!(tx1.product_name.as_deref(), Some("DJI Mic Mini"));
     }
 
     #[test]
@@ -736,10 +774,26 @@ mod tests {
         assert_eq!(st.rx.as_ref().unwrap().serial.as_deref(), Some("DDDDDDDDDDDDDD"));
         assert_eq!(st.tx[0].as_ref().unwrap().serial.as_deref(), Some("EEEEEEEEEEEEEE"));
         assert_eq!(st.tx[1].as_ref().unwrap().serial.as_deref(), Some("FFFFFFFFFFFFFF"));
-        // Firmware is identical across every unit in this fixture.
+        // Firmware and product name are identical across every unit in this fixture.
         for tx in st.tx.iter().flatten() {
             assert_eq!(tx.firmware.unwrap().to_string(), "02.03.17.00");
+            assert_eq!(tx.product_name.as_deref(), Some("DJI Mic Mini"));
         }
+    }
+
+    #[test]
+    fn decodes_variable_length_product_name_for_a_different_tx_model() {
+        // A transmitter can report a product name of a different length than
+        // its peer (e.g. a newer-generation unit's name is longer) — the
+        // record's own length byte, not a fixed width, governs how much to
+        // read.
+        let st = MicMini
+            .decode(&fresh_status(), &sample_identity_rx_and_tx_v2_model())
+            .expect("decode");
+        assert_eq!(
+            st.tx[0].as_ref().unwrap().product_name.as_deref(),
+            Some("DJI Mic Mini 2")
+        );
     }
 
     #[test]
@@ -760,8 +814,8 @@ mod tests {
         // `previous` as the status push already would have.
         let mut previous = fresh_status();
         previous.tx = [
-            Some(TxInfo { level: None, serial: None, firmware: None }),
-            Some(TxInfo { level: None, serial: None, firmware: None }),
+            Some(TxInfo { level: None, serial: None, firmware: None, product_name: None }),
+            Some(TxInfo { level: None, serial: None, firmware: None, product_name: None }),
         ];
         let st = MicMini.decode(&previous, &sample_level_2tx()).expect("decode");
         assert_eq!(st.tx[0].as_ref().unwrap().level, Some(0x30));

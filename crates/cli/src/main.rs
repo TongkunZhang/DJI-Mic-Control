@@ -8,6 +8,7 @@ use std::time::{Duration, Instant};
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
 use device::{DeviceManager, DeviceStatus};
+use device::protocol::TxInfo;
 
 /// How long to wait for a device to appear and send its first heartbeat.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -162,6 +163,15 @@ fn unknown<T: std::fmt::Display>(v: &Option<T>) -> String {
     v.as_ref().map(|v| v.to_string()).unwrap_or_else(|| "unknown".to_string())
 }
 
+/// A transmitter slot's display label: its own reported product name once
+/// known (e.g. `"DJI Mic Mini 2 (TX1)"`), else the bare slot number.
+fn tx_label(i: usize, tx: Option<&TxInfo>) -> String {
+    match tx.and_then(|t| t.product_name.as_deref()) {
+        Some(name) => format!("{name} (TX{})", i + 1),
+        None => format!("TX {}", i + 1),
+    }
+}
+
 fn print_status(mgr: &DeviceManager, id: &str, status: &DeviceStatus, json: bool) -> Result<()> {
     if json {
         println!("{}", serde_json::to_string_pretty(status)?);
@@ -173,15 +183,15 @@ fn print_status(mgr: &DeviceManager, id: &str, status: &DeviceStatus, json: bool
         println!("Receiver: serial {}  fw {}", unknown(&rx.serial), unknown(&rx.firmware));
     }
     for (i, tx) in status.tx.iter().enumerate() {
+        let label = tx_label(i, tx.as_ref());
         match tx {
             Some(t) => println!(
-                "TX{}:      serial {}  fw {}  level {}",
-                i + 1,
+                "{label}:      serial {}  fw {}  level {}",
                 unknown(&t.serial),
                 unknown(&t.firmware),
                 unknown(&t.level)
             ),
-            None => println!("TX{}:      (off)", i + 1),
+            None => println!("{label}:      (off)"),
         }
     }
     println!("NC button: {}", if status.nc_enabled { "on" } else { "off" });

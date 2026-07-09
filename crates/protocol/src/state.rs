@@ -38,6 +38,9 @@ pub struct TxInfo {
     pub level: Option<u8>,
     pub serial: Option<String>,
     pub firmware: Option<Firmware>,
+    /// Product name as the transmitter reports it, e.g. `"DJI Mic Mini"` or
+    /// `"DJI Mic Mini 2"` — v2 firmware only (see `PROTOCOL.md`).
+    pub product_name: Option<String>,
 }
 
 /// State of the receiver. `serial`/`firmware` are `None` when not yet known

@@ -21,6 +21,24 @@
   // Identity/level fields the model hasn't decoded yet read as null.
   const orUnknown = (v) => v ?? "Unknown";
 
+  // A transmitter card's title: its own reported product name once known
+  // (e.g. "DJI Mic Mini 2 (TX1)"), else the bare slot number.
+  const txLabel = (tx, i) => (tx?.product_name ? `${tx.product_name} (TX${i + 1})` : `TX ${i + 1}`);
+
+  // Artwork varies by the transmitter's own reported product name — a Mic
+  // Mini 2 looks different from the original. Returns null (no picture)
+  // while that's still a transient unknown rather than a guess: v2 firmware
+  // reports it a moment after connecting, so briefly null there means "not
+  // arrived yet," not "never coming" — only v1 firmware (which has no such
+  // field at all) or a disconnected slot falls back to the base picture.
+  const TX_PICTOGRAMS = { "DJI Mic Mini 2": "mic-mini-2" };
+  function txPictogram(tx, protocolVersion) {
+    if (!tx) return null;
+    if (tx.product_name) return `${TX_PICTOGRAMS[tx.product_name] ?? device.pictogram_key}-tx`;
+    if (protocolVersion === 2) return null;
+    return `${device.pictogram_key}-tx`;
+  }
+
   // Noise Cancel's three settings render as one combined element (see
   // NoiseCancelControl) rather than three separate rows. Collapse them into
   // a single placeholder, at the position the first of them would have
@@ -145,10 +163,13 @@
     </div>
 
     {#each status.tx as tx, i}
+      {@const picto = txPictogram(tx, status.protocol_version)}
       <div class="card">
         <div class="card-head">
-          <span class="card-title">Transmitter {i + 1}</span>
-          <DevicePicto pictogram={`${device.pictogram_key}-tx`} size={38} />
+          <span class="card-title">{txLabel(tx, i)}</span>
+          {#if picto}
+            <DevicePicto pictogram={picto} size={38} />
+          {/if}
         </div>
         {#if tx}
           <div class="kv"><span>Serial</span><b>{orUnknown(tx.serial)}</b></div>

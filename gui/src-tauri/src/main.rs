@@ -184,6 +184,29 @@ fn alert_active(app: &AppHandle) -> bool {
     mgr.list().iter().all(|d| !d.connected)
 }
 
+/// True when a DJI Mic Mini 2 is connected to either TX slot of any tracked
+/// device, so the tray icon can reflect it regardless of which physical slot
+/// it's in.
+fn mic_mini_2_present(app: &AppHandle) -> bool {
+    let mgr = app.state::<Arc<DeviceManager>>().inner().clone();
+    mgr.list().iter().any(|d| {
+        mgr.status(&d.id).is_ok_and(|st| {
+            st.tx.iter().flatten().any(|t| t.product_name.as_deref() == Some("DJI Mic Mini 2"))
+        })
+    })
+}
+
+/// Decode a PNG and scale it to fit within `max_dim`×`max_dim` (preserving
+/// aspect ratio), for turning a full-size product photo into tray-icon art.
+fn scaled_png(bytes: &[u8], max_dim: u32) -> Option<Image<'static>> {
+    let resized = image::load_from_memory(bytes)
+        .ok()?
+        .resize(max_dim, max_dim, image::imageops::FilterType::Lanczos3)
+        .to_rgba8();
+    let (width, height) = (resized.width(), resized.height());
+    Some(Image::new_owned(resized.into_raw(), width, height))
+}
+
 /// Blend `color` into the pixel at `idx` by `coverage` (0..=1).
 fn blend(rgba: &mut [u8], idx: usize, color: [u8; 4], coverage: f32) {
     let coverage = coverage.clamp(0.0, 1.0);
@@ -271,6 +294,27 @@ fn badge_icon(base: &Image<'static>) -> Image<'static> {
     Image::new_owned(rgba, width, height)
 }
 
+/// The tray icon's four precomputed variants, selected by whether a Mic Mini
+/// 2 is connected and whether the "no signal" badge should show.
+struct TrayIcons {
+    base: Option<Image<'static>>,
+    base_alert: Option<Image<'static>>,
+    mic2: Option<Image<'static>>,
+    mic2_alert: Option<Image<'static>>,
+}
+
+impl TrayIcons {
+    fn pick(&self, mic2: bool, alert: bool) -> Option<Image<'static>> {
+        let icon = match (mic2, alert) {
+            (true, true) => &self.mic2_alert,
+            (true, false) => &self.mic2,
+            (false, true) => &self.base_alert,
+            (false, false) => &self.base,
+        };
+        icon.clone().or_else(|| self.base.clone())
+    }
+}
+
 fn main() {
     // On SIGTERM/SIGINT (logout, shutdown, Ctrl-C) exit via quit_now() so the
     // WebKit helpers are killed rather than crashing in their GL teardown. This
@@ -327,11 +371,24 @@ fn main() {
                 }
             }
 
-            // Base tray icon plus a pre-rendered "no signal" variant, swapped
-            // in when no mic is connected/streaming.
+            // Four tray icon variants: the generic app logo, and a DJI Mic
+            // Mini 2 variant swapped in when one's connected to either TX
+            // slot (of any tracked device) — each with a pre-rendered "no
+            // signal" badged counterpart.
             let tray_base = Image::from_bytes(include_bytes!("../icons/128x128.png")).ok();
-            let tray_alert = tray_base.as_ref().map(badge_icon);
+            let tray_mic2 = scaled_png(
+                include_bytes!("../../src/assets/devices/mic-mini-2-tx.png"),
+                128,
+            )
+            .or_else(|| tray_base.clone());
+            let icons = TrayIcons {
+                base_alert: tray_base.as_ref().map(badge_icon),
+                mic2_alert: tray_mic2.as_ref().map(badge_icon),
+                base: tray_base,
+                mic2: tray_mic2,
+            };
             let initial_alert = alert_active(app.handle());
+            let initial_mic2 = mic_mini_2_present(app.handle());
 
             let initial = menu_state(app.handle());
             let menu = build_menu(app.handle(), &initial)?;
@@ -374,7 +431,8 @@ fn main() {
                     }
                     _ => {}
                 });
-            let icon = if initial_alert { tray_alert.clone() } else { tray_base.clone() }
+            let icon = icons
+                .pick(initial_mic2, initial_alert)
                 .or_else(|| app.default_window_icon().cloned());
             if let Some(icon) = icon {
                 tray = tray.icon(icon);
@@ -382,12 +440,13 @@ fn main() {
             tray.build(app)?;
 
             // Keep the tray menu in sync with device count, NC/LED state, and the
-            // autostart setting; keep the tray icon's "no signal" badge in sync
-            // with whether any mic is actually streaming.
+            // autostart setting; keep the tray icon's "no signal" badge and Mic
+            // Mini 2 variant in sync with what's actually connected.
             let handle = app.handle().clone();
             std::thread::spawn(move || {
                 let mut last = initial;
                 let mut last_alert = initial_alert;
+                let mut last_mic2 = initial_mic2;
                 loop {
                     let state = menu_state(&handle);
                     if state != last {
@@ -397,9 +456,11 @@ fn main() {
                     }
 
                     let alert = alert_active(&handle);
-                    if alert != last_alert {
+                    let mic2 = mic_mini_2_present(&handle);
+                    if alert != last_alert || mic2 != last_mic2 {
                         last_alert = alert;
-                        let icon = if alert { tray_alert.clone() } else { tray_base.clone() };
+                        last_mic2 = mic2;
+                        let icon = icons.pick(mic2, alert);
                         let h = handle.clone();
                         let _ = handle.run_on_main_thread(move || {
                             if let (Some(tray), Some(icon)) = (h.tray_by_id("main"), icon) {

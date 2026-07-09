@@ -18,3 +18,9 @@ So a model with `pictogram_key = "mic-mini"` looks for `mic-mini-rx.*` and
   the app still works before artwork is supplied.
 
 Adding a file here is picked up automatically — no code changes needed.
+
+A connected transmitter can also override its own card artwork based on the
+product name it reports, independent of the receiver's `pictogram_key` — see
+`TX_PICTOGRAMS` in `DevicePanel.svelte`. `mic-mini-2-tx.png` is the DJI Mic
+Mini 2's picture, used when a TX's `product_name` is `"DJI Mic Mini 2"`;
+anything else (or not yet known) falls back to the base model's TX artwork.

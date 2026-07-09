@@ -440,7 +440,7 @@ repeated until the frame ends. Known tags:
 | ------ | -------- | ------------------------------------------------------------------ | -------------------------------------- |
 | `0x01` | Identity | 4-byte firmware version (component order reversed — see below), then a 14-byte ASCII serial | `0` = receiver, `1`/`2` = TX slot 0/1 (0-based) |
 | `0x04` | Identity | 6-character hex-like id (not modelled)                              | same as `0x01`                         |
-| `0x06` | Identity | ASCII product name, e.g. `DJI Mic Mini` (not modelled)              | same as `0x01`                         |
+| `0x06` | Identity | ASCII product name, e.g. `DJI Mic Mini` or `DJI Mic Mini 2` — variable length, matching the record's own length byte | same as `0x01`; only TX (`1`/`2`) is modelled |
 | `0x05` | Level    | 1-byte live audio input level                                       | `1`/`2` = TX slot 0/1 (**1-based**, unlike the identity push) |
 
 The `0x01` record's firmware bytes read `[b0, b1, b2, b3]` on the wire but
