@@ -370,6 +370,7 @@ Header offsets that matter (the rest is currently-unidentified constants):
 | 12     | 1   | Capability byte: `0x26`/`0x46`/`0x66` for 0/1/2 TX connected (redundant with frame length) |
 | 20     | 1   | Flags — see below                                                      |
 | 21     | 1   | Flags — see below                                                      |
+| 44     | 1   | Per-TX connected bitmask — see below                                  |
 | 48     | 1   | Flags — see below                                                      |
 | 52     | 32×N| One slot per connected TX (see below)                                  |
 
@@ -387,6 +388,13 @@ Header offsets that matter (the rest is currently-unidentified constants):
 | ------ | ---------------------------- |
 | `0x01` | Auto off (receiver) active |
 | `0x04` | Stereo tracking active     |
+
+**Offset 44:** per-TX connected bitmask — `0x01` = TX1, `0x02` = TX2 (physical
+unit numbering, not slot position). This is the authoritative signal for
+which transmitter(s) are connected: it's set the instant a TX connects, up
+to one status-push tick *before* that TX's 32-byte slot appears in the slot
+list below, never the reverse — a decoder relying on slot presence alone
+lags this bitmask by that one tick.
 
 **Offset 48:**
 
@@ -426,9 +434,10 @@ transmitter a lone connected slot belongs to.
 
 ### Identity and audio-level pushes: shared record format
 
-Both push types are a sequence of records starting at offset 14 (offsets
-12–13 vary by content/length and aren't further interpreted) and running to
-the frame's trailing CRC:
+Both push types are a sequence of records starting at offset 14, preceded by
+a 16-bit little-endian length field at offset 12 giving the byte length of
+everything from offset 14 up to (not including) the trailing CRC — i.e.
+`frame length − 14 − 2`, redundant with the frame's own length:
 
 ```
 [tag: 1][unit index: 1][reserved: 3][length: 1][data: length bytes]

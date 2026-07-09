@@ -341,18 +341,12 @@ fn decode_v1(f: &[u8]) -> Option<DeviceStatus> {
 // this frame carries forward from `previous` rather than knowing itself.
 const V2_HEADER_LEN: usize = 52;
 const V2_TX_SLOT_LEN: usize = 32;
-
-/// Read a TX slot's physical unit number (1 or 2) from its 6-byte record
-/// header — offset `+1`, right after the `0x02` tag byte (see `PROTOCOL.md`).
-/// This is independent of slot position, so it identifies a lone connected
-/// transmitter directly. Returns `None` for anything other than `1`/`2`.
-fn tx_slot_unit(f: &[u8], slot_off: usize) -> Option<usize> {
-    match f[slot_off + 1] {
-        1 => Some(0),
-        2 => Some(1),
-        _ => None,
-    }
-}
+/// Per-TX connected bitmask: `0x01` = TX1, `0x02` = TX2 (see `PROTOCOL.md`).
+/// This is the authoritative signal for which physical transmitter(s) are
+/// connected — it's set the instant a TX connects, up to one status-push
+/// tick *before* that TX's 32-byte slot appears in the slot list, so slot
+/// presence alone would lag it in that narrow window.
+const V2_TX_CONNECTED_OFFSET: usize = 44;
 
 /// Decode a v2 status push.
 ///
@@ -383,22 +377,21 @@ fn decode_v2_status(previous: &DeviceStatus, f: &[u8]) -> Option<DeviceStatus> {
     let mut status = DeviceStatus::disconnected(MODEL_ID);
     status.connected = true;
     status.nc_enabled = flags1 & 0x20 != 0;
-    // Each present slot names its own physical TX (1 or 2) at offset +1 —
-    // place it in the matching array index directly rather than guessing
-    // from slot position. Any physical TX with no slot in this frame is
-    // disconnected.
-    status.tx = [None, None];
-    for slot_pos in 0..tx_count {
-        let slot_off = V2_HEADER_LEN + V2_TX_SLOT_LEN * slot_pos;
-        let Some(i) = tx_slot_unit(f, slot_off) else { continue };
-        status.tx[i] =
-            Some(previous.tx[i].clone().unwrap_or(TxInfo {
+    // `V2_TX_CONNECTED_OFFSET`'s bits are the connected/disconnected source
+    // of truth per physical TX — identity/level (from `decode_v2_records`)
+    // is carried forward under whichever array index the bit for that unit
+    // occupies.
+    let connected = f[V2_TX_CONNECTED_OFFSET];
+    status.tx = std::array::from_fn(|i| {
+        (connected & (1 << i) != 0).then(|| {
+            previous.tx[i].clone().unwrap_or(TxInfo {
                 level: None,
                 serial: None,
                 firmware: None,
                 product_name: None,
-            }));
-    }
+            })
+        })
+    });
     status.rx =
         Some(previous.rx.clone().unwrap_or(RxInfo { serial: None, firmware: None }));
 
@@ -841,17 +834,18 @@ mod tests {
         assert_eq!(status_push.settings["noise-cancel"], "strong");
     }
 
-    /// A synthetic 1-TX v2 status push (86 bytes), CRC stripped, with its
-    /// sole slot naming TX2 (unit byte `2`) at slot offset +1 — the shape a
-    /// real device sends when TX2 alone is connected.
+    /// A synthetic 1-TX v2 status push (86 bytes), CRC stripped: capability
+    /// byte, connected-bitmask (`+44` = `0x02`), and sole slot (unit byte
+    /// `2` at slot offset +1) all agree it's TX2 alone connected.
     fn sample_tx2_only_v2() -> Vec<u8> {
-        let hex = "555604a65a020000005b0303460003000000002028310c000000000000000000000000000000000000000000030000001c00000002020000001ab825040100780000000000000000000000000000000000000000";
+        let hex = "555604a65a020000005b0303460003000000002028310c000000000000000000000000000000000000000000020000001c00000002020000001ab825040100780000000000000000000000000000000000000000";
         crate::crc::append(hex_body(hex), crate::crc::V2_INIT, crate::crc::V2_RESIDUE)
     }
 
-    /// The same shape as [`sample_tx2_only_v2`] but naming TX1 (unit byte `1`).
+    /// The same shape as [`sample_tx2_only_v2`] but for TX1 alone (connected
+    /// bitmask `0x01`, slot unit byte `1`).
     fn sample_tx1_only_v2() -> Vec<u8> {
-        let hex = "555604a65a020000005b0303460003000000002028310c000000000000000000000000000000000000000000030000001c00000002010000001ab825040100780000000000000000000000000000000000000000";
+        let hex = "555604a65a020000005b0303460003000000002028310c000000000000000000000000000000000000000000010000001c00000002010000001ab825040100780000000000000000000000000000000000000000";
         crate::crc::append(hex_body(hex), crate::crc::V2_INIT, crate::crc::V2_RESIDUE)
     }
 
@@ -884,6 +878,33 @@ mod tests {
         let after = MicMini.decode(&both, &sample_tx2_only_v2()).unwrap();
         assert!(after.tx[0].is_none());
         assert_eq!(after.tx[1].as_ref().unwrap().serial.as_deref(), Some("FFFFFFFFFFFFFF"));
+    }
+
+    /// A synthetic 0-TX v2 status push (54 bytes), CRC stripped, but with
+    /// the connected bitmask (`+44`) already flagging TX2 — the shape a real
+    /// device sends for up to one tick right as a transmitter connects,
+    /// before its slot appears in the slot list.
+    fn sample_tx2_flagged_but_no_slot_yet_v2() -> Vec<u8> {
+        let hex = "553604a65a020000005b0303260003000000002028310c000000000000000000000000000000000000000000020000001c000000";
+        crate::crc::append(hex_body(hex), crate::crc::V2_INIT, crate::crc::V2_RESIDUE)
+    }
+
+    #[test]
+    fn tx_connecting_shows_as_connected_before_its_slot_appears() {
+        // `+44` is flagged for TX2 a tick before the slot list catches up —
+        // the decoder should show TX2 as connected-but-unidentified
+        // immediately rather than waiting for its slot.
+        let st = MicMini
+            .decode(&fresh_status(), &sample_tx2_flagged_but_no_slot_yet_v2())
+            .expect("decode");
+        assert!(st.tx[0].is_none());
+        let tx2 = st.tx[1].as_ref().expect("TX2 shown connected from the bitmask alone");
+        assert_eq!(tx2.serial, None);
+        assert_eq!(tx2.level, None);
+
+        // Its slot appears on the next tick; identity/level fill in later.
+        let after = MicMini.decode(&st, &sample_tx2_only_v2()).expect("decode");
+        assert!(after.tx[1].is_some());
     }
 
     #[test]
