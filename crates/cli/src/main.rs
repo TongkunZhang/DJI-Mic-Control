@@ -168,7 +168,7 @@ fn unknown<T: std::fmt::Display>(v: &Option<T>) -> String {
 fn tx_label(i: usize, tx: Option<&TxInfo>) -> String {
     match tx.and_then(|t| t.product_name.as_deref()) {
         Some(name) => format!("{name} (TX{})", i + 1),
-        None => format!("TX {}", i + 1),
+        None => format!("TX{}", i + 1),
     }
 }
 

@@ -23,7 +23,7 @@
 
   // A transmitter card's title: its own reported product name once known
   // (e.g. "DJI Mic Mini 2 (TX1)"), else the bare slot number.
-  const txLabel = (tx, i) => (tx?.product_name ? `${tx.product_name} (TX${i + 1})` : `TX ${i + 1}`);
+  const txLabel = (tx, i) => (tx?.product_name ? `${tx.product_name} (TX${i + 1})` : `TX${i + 1}`);
 
   // Artwork varies by the transmitter's own reported product name — a Mic
   // Mini 2 looks different from the original. Returns null (no picture)
