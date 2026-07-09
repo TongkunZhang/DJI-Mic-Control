@@ -337,39 +337,16 @@ fn decode_v1(f: &[u8]) -> Option<DeviceStatus> {
 const V2_HEADER_LEN: usize = 52;
 const V2_TX_SLOT_LEN: usize = 32;
 
-/// Reconcile the two TX slots against a fresh connected-count, without
-/// assuming a lone connected transmitter is always TX1 (array index 0).
-///
-/// Slots already holding data are left untouched. If the count grew, the
-/// new arrival is parked in the lowest empty slot as "connected but
-/// unidentified" until `decode_v2_records` places its real data in its
-/// actual slot. If the count shrank, the least-informative slot (no
-/// identity/level data yet) is dropped first, since that's most likely the
-/// placeholder rather than a transmitter that was actually known; if every
-/// remaining slot already has real data, there's no way to tell which one
-/// disconnected, so the higher-indexed slot is dropped as a last resort.
-fn merge_tx_slots(previous: &[Option<TxInfo>; 2], tx_count: usize) -> [Option<TxInfo>; 2] {
-    let mut tx = previous.clone();
-    let mut known: Vec<usize> = (0..2).filter(|&i| tx[i].is_some()).collect();
-
-    while known.len() > tx_count {
-        let pos = known
-            .iter()
-            .position(|&i| {
-                let t = tx[i].as_ref().unwrap();
-                t.serial.is_none() && t.level.is_none() && t.firmware.is_none()
-            })
-            .unwrap_or(known.len() - 1);
-        let i = known.remove(pos);
-        tx[i] = None;
+/// Read a TX slot's physical unit number (1 or 2) from its 6-byte record
+/// header — offset `+1`, right after the `0x02` tag byte (see `PROTOCOL.md`).
+/// This is independent of slot position, so it identifies a lone connected
+/// transmitter directly. Returns `None` for anything other than `1`/`2`.
+fn tx_slot_unit(f: &[u8], slot_off: usize) -> Option<usize> {
+    match f[slot_off + 1] {
+        1 => Some(0),
+        2 => Some(1),
+        _ => None,
     }
-    while known.len() < tx_count {
-        let i = (0..2).find(|&i| tx[i].is_none()).expect("tx_count is at most 2");
-        tx[i] = Some(TxInfo { level: None, serial: None, firmware: None });
-        known.push(i);
-    }
-
-    tx
 }
 
 /// Decode a v2 status push.
@@ -401,14 +378,17 @@ fn decode_v2_status(previous: &DeviceStatus, f: &[u8]) -> Option<DeviceStatus> {
     let mut status = DeviceStatus::disconnected(MODEL_ID);
     status.connected = true;
     status.nc_enabled = flags1 & 0x20 != 0;
-    // The status push only carries a *count* of connected transmitters, not
-    // which physical slot(s) they occupy — slot identity is only ever learned
-    // from the separate identity/level pushes (`decode_v2_records`), which
-    // key off the real physical index. So already-populated slots are kept in
-    // place rather than being re-guessed on every tick; a newly-connected,
-    // not-yet-identified transmitter is parked in the lowest empty slot until
-    // an identity/level push relocates its data to the right one.
-    status.tx = merge_tx_slots(&previous.tx, tx_count);
+    // Each present slot names its own physical TX (1 or 2) at offset +1 —
+    // place it in the matching array index directly rather than guessing
+    // from slot position. Any physical TX with no slot in this frame is
+    // disconnected.
+    status.tx = [None, None];
+    for slot_pos in 0..tx_count {
+        let slot_off = V2_HEADER_LEN + V2_TX_SLOT_LEN * slot_pos;
+        let Some(i) = tx_slot_unit(f, slot_off) else { continue };
+        status.tx[i] =
+            Some(previous.tx[i].clone().unwrap_or(TxInfo { level: None, serial: None, firmware: None }));
+    }
     status.rx =
         Some(previous.rx.clone().unwrap_or(RxInfo { serial: None, firmware: None }));
 
@@ -486,7 +466,8 @@ fn decode_v2_records(previous: &DeviceStatus, f: &[u8]) -> Option<DeviceStatus> 
                         rx.firmware = Some(firmware);
                     }
                     1 | 2 => {
-                        if let Some(slot) = status.tx.get_mut((index - 1) as usize) {
+                        let i = (index - 1) as usize;
+                        if let Some(slot) = status.tx.get_mut(i) {
                             let tx = slot.get_or_insert_with(|| TxInfo {
                                 level: None,
                                 serial: None,
@@ -501,7 +482,8 @@ fn decode_v2_records(previous: &DeviceStatus, f: &[u8]) -> Option<DeviceStatus> 
                 matched = true;
             }
             0x05 if data.len() == 1 && (index == 1 || index == 2) => {
-                if let Some(slot) = status.tx.get_mut((index - 1) as usize) {
+                let i = (index - 1) as usize;
+                if let Some(slot) = status.tx.get_mut(i) {
                     slot.get_or_insert_with(|| TxInfo {
                         level: None,
                         serial: None,
@@ -593,15 +575,15 @@ mod tests {
         let body: Vec<u8> = vec![
             0x55, 0x54, 0x04, 0xf6, 0x5a, 0x02, 0x0e, 0x79, 0x00, 0x5b, 0x03,
             0x00, 0x47, 0x00, // header
-            // TX1, serial "8SNTX100000000"
-            0xb0, 0x25, 0x38, 0x00, 0x01, 0x01, 0x00, 0x38, 0x0e, 0x38, 0x53,
-            0x4e, 0x54, 0x58, 0x31, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30,
-            0x30, // TX2, serial "8SNTX200000000"
-            0xb0, 0x25, 0x38, 0x00, 0x01, 0x01, 0x00, 0x38, 0x0e, 0x38, 0x53,
-            0x4e, 0x54, 0x58, 0x32, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30,
-            0x30, // RX, serial "SNRX0000000000"
-            0x32, 0x20, 0x01, 0x01, 0x00, 0x38, 0x0e, 0x53, 0x4e, 0x52, 0x58,
-            0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x00,
+            // TX1, serial "BBBBBBBBBBBBBB"
+            0xb0, 0x25, 0x38, 0x00, 0x01, 0x01, 0x00, 0x38, 0x0e, 0x42, 0x42,
+            0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42,
+            0x42, // TX2, serial "CCCCCCCCCCCCCC"
+            0xb0, 0x25, 0x38, 0x00, 0x01, 0x01, 0x00, 0x38, 0x0e, 0x43, 0x43,
+            0x43, 0x43, 0x43, 0x43, 0x43, 0x43, 0x43, 0x43, 0x43, 0x43, 0x43,
+            0x43, // RX, serial "AAAAAAAAAAAAAA"
+            0x32, 0x20, 0x01, 0x01, 0x00, 0x38, 0x0e, 0x41, 0x41, 0x41, 0x41,
+            0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x00,
         ];
         crate::crc::append(body, crate::crc::V1_INIT, crate::crc::V1_RESIDUE)
     }
@@ -614,10 +596,10 @@ mod tests {
         assert_eq!(st.protocol_version, Some(1));
         assert_eq!(st.tx_count(), 2);
         let tx1 = st.tx[0].as_ref().unwrap();
-        assert_eq!(tx1.serial.as_deref(), Some("8SNTX100000000"));
+        assert_eq!(tx1.serial.as_deref(), Some("BBBBBBBBBBBBBB"));
         assert_eq!(tx1.firmware.unwrap().to_string(), "01.01.00.56");
-        assert_eq!(st.tx[1].as_ref().unwrap().serial.as_deref(), Some("8SNTX200000000"));
-        assert_eq!(st.rx.as_ref().unwrap().serial.as_deref(), Some("SNRX0000000000"));
+        assert_eq!(st.tx[1].as_ref().unwrap().serial.as_deref(), Some("CCCCCCCCCCCCCC"));
+        assert_eq!(st.rx.as_ref().unwrap().serial.as_deref(), Some("AAAAAAAAAAAAAA"));
         // state 0xb0 -> Strong NC (0x20 set), low cut clear.
         assert_eq!(st.settings["noise-cancel"], "strong");
         assert_eq!(st.settings["low-cut"], "off");
@@ -687,9 +669,9 @@ mod tests {
     /// A synthetic receiver-only identity push (70 bytes), CRC stripped.
     fn sample_identity_rx_only() -> Vec<u8> {
         let hex = concat!(
-            "5546048b5a020000005b030336000100000000120011030238534e5258313030",
-            "30303030303004000000000630303030303006000000000c444a49204d696320",
-            "4d696e69",
+            "5546048b5a020000005b0303360001000000001200110302444444444444444444",
+            "444444444404000000000630303030303006000000000c444a49204d6963204d69",
+            "6e69",
         );
         crate::crc::append(hex_body(hex), crate::crc::V2_INIT, crate::crc::V2_RESIDUE)
     }
@@ -699,10 +681,10 @@ mod tests {
     /// stripped.
     fn sample_identity_rx_and_tx() -> Vec<u8> {
         let hex = concat!(
-            "557c04415a020000005b03036c000100000000120011030238534e5258313030",
-            "30303030303004000000000630303030303006000000000c444a49204d696320",
-            "4d696e690101000000120011030238534e545833303030303030303004010000",
-            "000630303030303006010000000c444a49204d6963204d696e69",
+            "557c04415a020000005b03036c0001000000001200110302444444444444444444",
+            "444444444404000000000630303030303006000000000c444a49204d6963204d69",
+            "6e6901010000001200110302454545454545454545454545454504010000000630",
+            "303030303006010000000c444a49204d6963204d696e69",
         );
         crate::crc::append(hex_body(hex), crate::crc::V2_INIT, crate::crc::V2_RESIDUE)
     }
@@ -714,12 +696,12 @@ mod tests {
     /// this fixture exists.
     fn sample_identity_rx_and_two_tx() -> Vec<u8> {
         let hex = concat!(
-            "55b204295a020000005b0303a2000100000000120011030238534e5258313030",
-            "30303030303004000000000630303030303006000000000c444a49204d696320",
-            "4d696e690101000000120011030238534e545833303030303030303004010000",
-            "000630303030303006010000000c444a49204d6963204d696e69010200000012",
-            "0011030238534e54583430303030303030300402000000063030303030300602",
-            "0000000c444a49204d6963204d696e69",
+            "55b204295a020000005b0303a20001000000001200110302444444444444444444",
+            "444444444404000000000630303030303006000000000c444a49204d6963204d69",
+            "6e6901010000001200110302454545454545454545454545454504010000000630",
+            "303030303006010000000c444a49204d6963204d696e6901020000001200110302",
+            "464646464646464646464646464604020000000630303030303006020000000c44",
+            "4a49204d6963204d696e69",
         );
         crate::crc::append(hex_body(hex), crate::crc::V2_INIT, crate::crc::V2_RESIDUE)
     }
@@ -734,16 +716,16 @@ mod tests {
     fn decodes_v2_identity_push_for_receiver_only() {
         let st = MicMini.decode(&fresh_status(), &sample_identity_rx_only()).expect("decode");
         let rx = st.rx.as_ref().unwrap();
-        assert_eq!(rx.serial.as_deref(), Some("8SNRX100000000"));
+        assert_eq!(rx.serial.as_deref(), Some("DDDDDDDDDDDDDD"));
         assert_eq!(rx.firmware.unwrap().to_string(), "02.03.17.00");
     }
 
     #[test]
     fn decodes_v2_identity_push_for_receiver_and_transmitter() {
         let st = MicMini.decode(&fresh_status(), &sample_identity_rx_and_tx()).expect("decode");
-        assert_eq!(st.rx.as_ref().unwrap().serial.as_deref(), Some("8SNRX100000000"));
+        assert_eq!(st.rx.as_ref().unwrap().serial.as_deref(), Some("DDDDDDDDDDDDDD"));
         let tx1 = st.tx[0].as_ref().unwrap();
-        assert_eq!(tx1.serial.as_deref(), Some("8SNTX300000000"));
+        assert_eq!(tx1.serial.as_deref(), Some("EEEEEEEEEEEEEE"));
         assert_eq!(tx1.firmware.unwrap().to_string(), "02.03.17.00");
     }
 
@@ -751,9 +733,9 @@ mod tests {
     fn decodes_v2_identity_push_for_receiver_and_both_transmitters() {
         let st =
             MicMini.decode(&fresh_status(), &sample_identity_rx_and_two_tx()).expect("decode");
-        assert_eq!(st.rx.as_ref().unwrap().serial.as_deref(), Some("8SNRX100000000"));
-        assert_eq!(st.tx[0].as_ref().unwrap().serial.as_deref(), Some("8SNTX300000000"));
-        assert_eq!(st.tx[1].as_ref().unwrap().serial.as_deref(), Some("8SNTX400000000"));
+        assert_eq!(st.rx.as_ref().unwrap().serial.as_deref(), Some("DDDDDDDDDDDDDD"));
+        assert_eq!(st.tx[0].as_ref().unwrap().serial.as_deref(), Some("EEEEEEEEEEEEEE"));
+        assert_eq!(st.tx[1].as_ref().unwrap().serial.as_deref(), Some("FFFFFFFFFFFFFF"));
         // Firmware is identical across every unit in this fixture.
         for tx in st.tx.iter().flatten() {
             assert_eq!(tx.firmware.unwrap().to_string(), "02.03.17.00");
@@ -795,9 +777,9 @@ mod tests {
         let with_level = MicMini.decode(&after_identity, &sample_level_2tx()).unwrap();
         let status_push = MicMini.decode(&with_level, &sample_2tx_v2()).unwrap();
 
-        assert_eq!(status_push.rx.as_ref().unwrap().serial.as_deref(), Some("8SNRX100000000"));
+        assert_eq!(status_push.rx.as_ref().unwrap().serial.as_deref(), Some("DDDDDDDDDDDDDD"));
         assert_eq!(status_push.rx.as_ref().unwrap().firmware.unwrap().to_string(), "02.03.17.00");
-        assert_eq!(status_push.tx[0].as_ref().unwrap().serial.as_deref(), Some("8SNTX300000000"));
+        assert_eq!(status_push.tx[0].as_ref().unwrap().serial.as_deref(), Some("EEEEEEEEEEEEEE"));
         assert_eq!(status_push.tx[0].as_ref().unwrap().level, Some(0x30));
         assert_eq!(status_push.tx[1].as_ref().unwrap().level, Some(0x30));
         // The flags themselves still decode normally alongside the carried-
@@ -805,36 +787,49 @@ mod tests {
         assert_eq!(status_push.settings["noise-cancel"], "strong");
     }
 
+    /// A synthetic 1-TX v2 status push (86 bytes), CRC stripped, with its
+    /// sole slot naming TX2 (unit byte `2`) at slot offset +1 — the shape a
+    /// real device sends when TX2 alone is connected.
+    fn sample_tx2_only_v2() -> Vec<u8> {
+        let hex = "555604a65a020000005b0303460003000000002028310c000000000000000000000000000000000000000000030000001c00000002020000001ab825040100780000000000000000000000000000000000000000";
+        crate::crc::append(hex_body(hex), crate::crc::V2_INIT, crate::crc::V2_RESIDUE)
+    }
+
+    /// The same shape as [`sample_tx2_only_v2`] but naming TX1 (unit byte `1`).
+    fn sample_tx1_only_v2() -> Vec<u8> {
+        let hex = "555604a65a020000005b0303460003000000002028310c000000000000000000000000000000000000000000030000001c00000002010000001ab825040100780000000000000000000000000000000000000000";
+        crate::crc::append(hex_body(hex), crate::crc::V2_INIT, crate::crc::V2_RESIDUE)
+    }
+
     #[test]
-    fn merge_tx_slots_relocates_solo_transmitter_by_identity() {
-        // A lone transmitter connects before its identity is known: the
-        // status push parks it in the lowest empty slot (0) as a placeholder.
-        let none: [Option<TxInfo>; 2] = [None, None];
-        let after_status = merge_tx_slots(&none, 1);
-        assert!(after_status[0].is_some());
-        assert!(after_status[1].is_none());
+    fn decodes_solo_tx_status_pushes_by_physical_unit_byte() {
+        // Each slot names its own physical TX (1 or 2) at offset +1 of its
+        // 32-byte record — a lone connected transmitter lands in the array
+        // index matching that number, not always index 0.
+        let tx1 = MicMini.decode(&fresh_status(), &sample_tx1_only_v2()).expect("decode");
+        assert!(tx1.tx[0].is_some());
+        assert!(tx1.tx[1].is_none());
 
-        // Its identity/level push then arrives at its *real* physical slot
-        // (1, i.e. TX2), leaving the placeholder in slot 0 untouched — this
-        // is exactly what happens when TX2 is the one actually connected.
-        let mut with_identity = after_status;
-        with_identity[1] = Some(TxInfo {
-            level: Some(0x30),
-            serial: Some("8SNTX400000000".into()),
-            firmware: None,
-        });
+        let tx2 = MicMini.decode(&fresh_status(), &sample_tx2_only_v2()).expect("decode");
+        assert!(tx2.tx[0].is_none());
+        assert!(tx2.tx[1].is_some());
+    }
 
-        // The next status tick (still tx_count == 1) must drop the stale,
-        // data-less placeholder in slot 0 rather than the real data in slot
-        // 1 — previously it did the opposite, permanently: it kept forcing
-        // slot 0 back to "connected" and slot 1 back to `None` every tick.
-        let reconciled = merge_tx_slots(&with_identity, 1);
-        assert!(reconciled[0].is_none());
-        assert_eq!(reconciled[1].as_ref().unwrap().serial.as_deref(), Some("8SNTX400000000"));
+    #[test]
+    fn tx1_disconnecting_from_both_resolves_on_the_very_next_frame() {
+        // Both connected and fully identified (mirrors
+        // `v2_status_push_carries_identity_and_level_forward`'s end state).
+        let after_identity =
+            MicMini.decode(&fresh_status(), &sample_identity_rx_and_two_tx()).unwrap();
+        let both = MicMini.decode(&after_identity, &sample_2tx_v2()).unwrap();
+        assert!(both.tx[0].is_some());
+        assert!(both.tx[1].is_some());
 
-        // And it stays stable on subsequent ticks instead of flapping.
-        let stable = merge_tx_slots(&reconciled, 1);
-        assert_eq!(stable, reconciled);
+        // TX1 physically disconnects, leaving TX2. TX2's own claimed unit
+        // number places its data correctly on this single frame.
+        let after = MicMini.decode(&both, &sample_tx2_only_v2()).unwrap();
+        assert!(after.tx[0].is_none());
+        assert_eq!(after.tx[1].as_ref().unwrap().serial.as_deref(), Some("FFFFFFFFFFFFFF"));
     }
 
     #[test]

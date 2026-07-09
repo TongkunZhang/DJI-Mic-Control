@@ -306,19 +306,19 @@ Follows the two TX slots (absolute offset 32 / 46 / 60 for 0 / 1 / 2-TX).
 
 ```
 55 54 04 f6 5a 02 0e 79 00 5b 03 00 47 00        header
-b0 25 38 00 01 01 00 38 0e 38 53 4e 54 58 31 30 30 30 30 30 30   TX1
-b0 25 38 00 01 01 00 38 0e 38 53 4e 54 58 32 30 30 30 30 30 30   TX2
-32 20 01 01 00 38 0e 53 4e 52 58 30 30 30 30 30 30 30 30 30 00   RX
+b0 25 38 00 01 01 00 38 0e 42 42 42 42 42 42 42 42 42 42 42 42 42 42   TX1
+b0 25 38 00 01 01 00 38 0e 43 43 43 43 43 43 43 43 43 43 43 43 43 43   TX2
+32 20 01 01 00 38 0e 41 41 41 41 41 41 41 41 41 41 41 41 41 41 00   RX
 <crc>
 ```
 
 Decoded:
 
-- TX1 — state `0xb0` (Strong NC, low cut off), level `0x38`, serial `8SNTX100000000`,
-  firmware `01.01.00.56`.
-- TX2 — serial `8SNTX200000000`.
+- TX1 — state `0xb0` (Strong NC, low cut off), level `0x38`, serial `BBBBBBBBBBBBBB`
+  (placeholder), firmware `01.01.00.56`.
+- TX2 — serial `CCCCCCCCCCCCCC` (placeholder).
 - RX — flags `0x32`/`0x20` (auto-off on, clip on, others off), serial
-  `SNRX0000000000`, plug-free off.
+  `AAAAAAAAAAAAAA` (placeholder), plug-free off.
 
 ---
 
@@ -398,26 +398,31 @@ Header offsets that matter (the rest is currently-unidentified constants):
 
 **TX slot (32 bytes, at absolute offset `52 + 32×i`):**
 
-Only the flag bytes are understood; the rest of the slot (20 of the 32 bytes)
-is always zero and may be reserved. Low Cut, Mic LEDs,
-TX Auto Off, and the NC-button permission have **no header-level fallback** —
-they're only knowable when at least one TX is connected, since they're purely
-per-transmitter settings that mirror identically across whichever TX are
-present.
+The slot turns out to be a 6-byte record header — the same
+`[tag:1][unit index:1][reserved:3][length:1]` shape used by the identity/
+audio-level records below — followed by 26 bytes of data, of which only 4
+are understood. Low Cut, Mic LEDs, TX Auto Off, and the NC-button permission
+have **no header-level fallback** — they're only knowable when at least one
+TX is connected, since they're purely per-transmitter settings that mirror
+identically across whichever TX are present.
 
-| Slot offset | Description                                                        |
-| ----------- | --------------------------------------------------------------------- |
-| +6          | Flags: `0x02` LEDs off (inverted), `0x10` TX auto-off active, `0x20` strong NC (mirror), `0x80` NC-button-toggle permission active |
-| +7          | Flags: `0x01` NC enabled (mirror of offset-20 bit `0x20`)             |
-| +8          | Flags: `0x04` clip limiter active (mirror of offset-48 bit `0x10`)    |
-| +9          | Flags: `0x20` low cut active                                          |
+| Slot offset | Len | Description                                                        |
+| ----------- | --- | --------------------------------------------------------------------- |
+| +0          | 1   | Constant `0x02` (record tag)                                          |
+| +1          | 1   | **Physical TX unit: `0x01` = TX1, `0x02` = TX2** — independent of slot position |
+| +2          | 3   | Constant zero (reserved, matching the record header shape)            |
+| +5          | 1   | Constant `0x1a` (26) — length of the data that follows, i.e. the rest of the slot |
+| +6          | 1   | Flags: `0x02` LEDs off (inverted), `0x10` TX auto-off active, `0x20` strong NC (mirror), `0x80` NC-button-toggle permission active |
+| +7          | 1   | Flags: `0x01` NC enabled (mirror of offset-20 bit `0x20`); constant bits `0x24` also set, purpose unknown |
+| +8          | 1   | Flags: `0x04` clip limiter active (mirror of offset-48 bit `0x10`)    |
+| +9          | 1   | Flags: `0x20` low cut active; a constant bit `0x01` also set, purpose unknown |
+| +10         | 1   | Constant zero                                                          |
+| +11         | 1   | Constant `0x78`, purpose unknown                                      |
+| +12–+31     | 20  | Constant zero                                                         |
 
-Nothing in this slot (or elsewhere in the status push) says *which* physical
-transmitter (TX1 or TX2) a slot belongs to when only one is connected — the
-slot list is simply compacted to however many are present. That mapping is
-only ever learned from the identity/level pushes below, which carry an
-explicit physical unit index. A decoder that assumes a lone connected
-transmitter is always TX1 will misattribute TX2-only connections.
+Since offset `+1` gives the physical TX directly, a decoder can place each
+slot's data by real unit number and never needs to guess which physical
+transmitter a lone connected slot belongs to.
 
 ### Identity and audio-level pushes: shared record format
 
@@ -460,7 +465,7 @@ headers bolded via spacing; serial and hex id are placeholder values):
 
 ```
 55 46 04 8b 5a 02 00 00 00 5b 03 03  36 00                              preamble
-01 00 00 00 00  12  00 11 03 02 <serial: 14 bytes, "8SNRX100000000">    tag 0x01, unit 0, firmware 00 11 03 02
+01 00 00 00 00  12  00 11 03 02 <serial: 14 bytes, "DDDDDDDDDDDDDD">    tag 0x01, unit 0, firmware 00 11 03 02
 04 00 00 00  06  <hex id: 6 bytes>                                       tag 0x04, unit 0
 06 00 00 00  0c  <product name: 12 bytes>                                tag 0x06, unit 0
 <crc>
@@ -480,5 +485,7 @@ Firmware `00 11 03 02` decodes to `02.03.17.00`.
 
 Decoded: offset 20 = `0x28` (strong NC on, NC power on), offset 21 = `0x31`
 (auto-off on, stereo off), offset 48 = `0x1c` (plug-free off, clip on, safety
-off), TX slot flags (+6) = `0xb8` (LEDs on, TX auto-off on, NC-button
+off). Each TX slot opens `02 01`/`02 02` — record tag `0x02` plus the
+physical unit (TX1/TX2) — followed by `00 00 00 1a` (reserved, then length
+26). TX slot flags (+6) = `0xb8` (LEDs on, TX auto-off on, NC-button
 permission on), low-cut byte (+9) = `0x01` (low cut off).

@@ -14,6 +14,7 @@ use crate::platform::{current_os, Os};
 
 /// A device is "connected" only if a heartbeat arrived within this window;
 /// otherwise it is present on the bus but not streaming (e.g. powered off).
+/// Real heartbeat timing is bursty enough that anything shorter flickers.
 const LIVE_WINDOW_MS: u64 = 1500;
 
 /// One tracked, opened device.
