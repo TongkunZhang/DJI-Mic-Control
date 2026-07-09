@@ -18,6 +18,19 @@ pub enum SettingKind {
     Enum,
 }
 
+/// Where a v2 command is addressed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum V2Target {
+    /// Fixed for every instance of the setting: the receiver (`0x0000`) or a
+    /// broadcast to every connected transmitter (`0xffff`).
+    Fixed(u16),
+    /// One specific transmitter (unit `1` or `2`), chosen by the caller when
+    /// building the command — for settings that don't mirror across TX (see
+    /// Voice Tone in `PROTOCOL.md`).
+    Tx,
+}
+
 /// One selectable value of a [`Setting`].
 #[derive(Debug, Clone, Copy, Serialize)]
 pub struct SettingOption {
@@ -48,9 +61,8 @@ pub struct Setting {
     /// target-addressed 22-byte command shape. Every setting is reachable
     /// this way.
     pub v2_command: u16,
-    /// Target unit for [`v2_command`](Self::v2_command): the receiver itself
-    /// (`0x0000`) or a broadcast to every connected transmitter (`0xffff`).
-    pub v2_target: u16,
+    /// Target for [`v2_command`](Self::v2_command).
+    pub v2_target: V2Target,
     /// Allowed options, in display order.
     pub options: &'static [SettingOption],
     /// Ids of settings this one is mutually exclusive with: when any of them is

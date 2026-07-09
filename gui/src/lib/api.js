@@ -10,6 +10,15 @@ export function setSetting(device, setting, value) {
   return invoke("set_setting", { device, setting, value });
 }
 
+/**
+ * Change one setting on a specific transmitter slot (0-based) of a device —
+ * for a setting that targets one TX individually rather than mirroring
+ * across both (currently just Voice Tone).
+ */
+export function setTxSetting(device, tx, setting, value) {
+  return invoke("set_tx_setting", { device, tx, setting, value });
+}
+
 /** Fetch the Linux udev-rules helper text. */
 export function udevHelp() {
   return invoke("udev_help");

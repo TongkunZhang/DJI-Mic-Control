@@ -26,6 +26,10 @@ fn hex(data: &[u8]) -> String {
 pub struct Command {
     pub setting_id: String,
     pub value: String,
+    /// The 0-based transmitter slot to address, for settings that target one
+    /// specific TX rather than broadcasting (see `V2Target::Tx`). `None` for
+    /// every other setting.
+    pub tx: Option<usize>,
     pub resp: std::sync::mpsc::Sender<Result<()>>,
 }
 
@@ -130,7 +134,7 @@ async fn run(
                 }
             }
             Wake::Command(Ok(cmd)) => {
-                let result = match model.build_command(seq, dialect, &cmd.setting_id, &cmd.value) {
+                let result = match model.build_command(seq, dialect, &cmd.setting_id, &cmd.value, cmd.tx) {
                     Some(pkt) => {
                         seq = seq.wrapping_add(1);
                         let comp = iface.bulk_out(ep_out, pkt).await;

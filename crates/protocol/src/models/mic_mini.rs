@@ -10,7 +10,7 @@
 
 use super::DeviceModel;
 use crate::packet;
-use crate::settings::{Setting, SettingKind, SettingOption};
+use crate::settings::{Setting, SettingKind, SettingOption, V2Target};
 use crate::state::{DeviceStatus, Firmware, RxInfo, TxInfo};
 
 /// The DJI Mic Mini (USB-C receiver + up to two transmitters).
@@ -19,8 +19,10 @@ pub struct MicMini;
 const MODEL_ID: &str = "dji-mic-mini";
 
 // v2 target addresses (see `PROTOCOL.md`).
-const TARGET_RX: u16 = 0x0000;
-const TARGET_TX: u16 = 0xffff;
+const TARGET_RX: V2Target = V2Target::Fixed(0x0000);
+const TARGET_TX: V2Target = V2Target::Fixed(0xffff);
+/// One specific transmitter, chosen by the caller — see Voice Tone.
+const TARGET_TX_ONE: V2Target = V2Target::Tx;
 
 // Standard Off=0x00 / On=0x01 pair shared by most toggles.
 const fn off_on() -> [SettingOption; 2] {
@@ -55,12 +57,20 @@ static LED_OPTS: [SettingOption; 2] = [
     SettingOption { value: "off", label: "Off", wire: 0x02 },
     SettingOption { value: "on", label: "On", wire: 0x00 },
 ];
+// DJI Mic Mini 2 only; addressed per-transmitter rather than broadcast (see
+// `TARGET_TX_ONE`), so this is rendered on the TX card, not the shared
+// settings list — front-ends key off this exact id.
+static VOICE_TONE_OPTS: [SettingOption; 3] = [
+    SettingOption { value: "standard", label: "Standard", wire: 0x00 },
+    SettingOption { value: "rich", label: "Rich", wire: 0x01 },
+    SettingOption { value: "bright", label: "Bright", wire: 0x02 },
+];
 
 const G_AUDIO: &str = "Audio";
 const G_POWER: &str = "Power & Startup";
 const G_DEVICE: &str = "Device";
 
-static SETTINGS: [Setting; 12] = [
+static SETTINGS: [Setting; 13] = [
     Setting {
         id: "noise-cancel",
         label: "Noise Cancel",
@@ -217,6 +227,19 @@ static SETTINGS: [Setting; 12] = [
         exclusive_with: &[],
         note: None,
     },
+    Setting {
+        id: "voice-tone",
+        label: "Voice Tone",
+        group: G_AUDIO,
+        kind: SettingKind::Enum,
+        // DJI Mic Mini 2 only; no v1 equivalent.
+        v1_command: None,
+        v2_command: 0x0029,
+        v2_target: TARGET_TX_ONE,
+        options: &VOICE_TONE_OPTS,
+        exclusive_with: &[],
+        note: None,
+    },
 ];
 
 const HEADER_LEN: usize = 14;
@@ -261,6 +284,7 @@ fn parse_v1_slot(f: &[u8], off: usize) -> Option<V1Slot> {
                 serial: Some(serial),
                 firmware: Some(firmware),
                 product_name: None,
+                voice_tone: None,
             }),
             state,
             flags,
@@ -389,9 +413,32 @@ fn decode_v2_status(previous: &DeviceStatus, f: &[u8]) -> Option<DeviceStatus> {
                 serial: None,
                 firmware: None,
                 product_name: None,
+                voice_tone: None,
             })
         })
     });
+    // Voice Tone doesn't mirror across TX the way every other per-transmitter
+    // setting does (see `PROTOCOL.md`), so — unlike `tx_flags`/`low_cut_flags`
+    // above — each present slot's own bits are read individually, keyed by
+    // that slot's own physical unit byte at `+1`.
+    for slot_pos in 0..tx_count {
+        let slot_off = V2_HEADER_LEN + V2_TX_SLOT_LEN * slot_pos;
+        let unit = f[slot_off + 1];
+        let Some(i) = (unit as usize).checked_sub(1).filter(|&i| i < 2) else { continue };
+        if let Some(tx) = status.tx[i].as_mut() {
+            let tone = f[slot_off + 9];
+            tx.voice_tone = Some(
+                if tone & 0x80 != 0 {
+                    "bright"
+                } else if tone & 0x40 != 0 {
+                    "rich"
+                } else {
+                    "standard"
+                }
+                .into(),
+            );
+        }
+    }
     status.rx =
         Some(previous.rx.clone().unwrap_or(RxInfo { serial: None, firmware: None }));
 
@@ -478,6 +525,7 @@ fn decode_v2_records(previous: &DeviceStatus, f: &[u8]) -> Option<DeviceStatus> 
                                 serial: None,
                                 firmware: None,
                                 product_name: None,
+                                voice_tone: None,
                             });
                             tx.serial = Some(serial);
                             tx.firmware = Some(firmware);
@@ -495,6 +543,7 @@ fn decode_v2_records(previous: &DeviceStatus, f: &[u8]) -> Option<DeviceStatus> 
                         serial: None,
                         firmware: None,
                         product_name: None,
+                        voice_tone: None,
                     })
                     .level = Some(data[0]);
                 }
@@ -508,6 +557,7 @@ fn decode_v2_records(previous: &DeviceStatus, f: &[u8]) -> Option<DeviceStatus> 
                         serial: None,
                         firmware: None,
                         product_name: None,
+                        voice_tone: None,
                     })
                     .product_name = Some(read_ascii_field(data));
                 }
@@ -680,10 +730,30 @@ mod tests {
         assert_eq!(st.settings["noise-cancel-button"], "on");
         // Low-cut byte (offset 61) = 0x01 -> off (0x20 clear).
         assert_eq!(st.settings["low-cut"], "off");
+        // Neither tone bit (+9 = 0x01, just the constant) set on either slot.
+        assert_eq!(st.tx[0].as_ref().unwrap().voice_tone.as_deref(), Some("standard"));
+        assert_eq!(st.tx[1].as_ref().unwrap().voice_tone.as_deref(), Some("standard"));
     }
 
     fn hex_body(hex: &str) -> Vec<u8> {
         (0..hex.len()).step_by(2).map(|i| u8::from_str_radix(&hex[i..i + 2], 16).unwrap()).collect()
+    }
+
+    /// The same shape as [`sample_2tx_v2`], but TX1's tone byte (+9) is
+    /// `0x41` (Rich) and TX2's is `0x81` (Bright) — confirming Voice Tone is
+    /// read per-slot rather than mirrored like every other TX setting.
+    fn sample_2tx_v2_distinct_tones() -> Vec<u8> {
+        let hex = "557604a65a020000005b0303660003000000002028310c000000000000000000000000000000000000000000030000001c00000002010000001ab82504410078000000000000000000000000000000000000000002020000001ab825048100780000000000000000000000000000000000000000";
+        crate::crc::append(hex_body(hex), crate::crc::V2_INIT, crate::crc::V2_RESIDUE)
+    }
+
+    #[test]
+    fn decodes_voice_tone_independently_per_tx() {
+        let st = MicMini
+            .decode(&fresh_status(), &sample_2tx_v2_distinct_tones())
+            .expect("decode");
+        assert_eq!(st.tx[0].as_ref().unwrap().voice_tone.as_deref(), Some("rich"));
+        assert_eq!(st.tx[1].as_ref().unwrap().voice_tone.as_deref(), Some("bright"));
     }
 
     /// A synthetic receiver-only identity push (70 bytes), CRC stripped.
@@ -807,8 +877,8 @@ mod tests {
         // `previous` as the status push already would have.
         let mut previous = fresh_status();
         previous.tx = [
-            Some(TxInfo { level: None, serial: None, firmware: None, product_name: None }),
-            Some(TxInfo { level: None, serial: None, firmware: None, product_name: None }),
+            Some(TxInfo { level: None, serial: None, firmware: None, product_name: None, voice_tone: None }),
+            Some(TxInfo { level: None, serial: None, firmware: None, product_name: None, voice_tone: None }),
         ];
         let st = MicMini.decode(&previous, &sample_level_2tx()).expect("decode");
         assert_eq!(st.tx[0].as_ref().unwrap().level, Some(0x30));
@@ -910,18 +980,18 @@ mod tests {
     #[test]
     fn builds_v1_command_from_setting_slug() {
         let pkt = MicMini
-            .build_command(1, Dialect::V1, "noise-cancel", "strong")
+            .build_command(1, Dialect::V1, "noise-cancel", "strong", None)
             .unwrap();
         assert_eq!(pkt.len(), packet::V1_COMMAND_LEN);
         assert_eq!(pkt[16], 0x01); // wire value
-        assert!(MicMini.build_command(1, Dialect::V1, "bogus", "x").is_none());
-        assert!(MicMini.build_command(1, Dialect::V1, "stereo", "maybe").is_none());
+        assert!(MicMini.build_command(1, Dialect::V1, "bogus", "x", None).is_none());
+        assert!(MicMini.build_command(1, Dialect::V1, "stereo", "maybe", None).is_none());
     }
 
     #[test]
     fn builds_v2_command_from_setting_slug() {
         let pkt = MicMini
-            .build_command(1, Dialect::V2, "noise-cancel", "strong")
+            .build_command(1, Dialect::V2, "noise-cancel", "strong", None)
             .unwrap();
         assert_eq!(pkt.len(), packet::V2_COMMAND_LEN);
         assert_eq!(pkt[19], 0x01); // wire value
@@ -933,10 +1003,38 @@ mod tests {
         // for v1 devices must fail cleanly rather than send a command that
         // doesn't exist there.
         assert!(MicMini
-            .build_command(1, Dialect::V1, "noise-cancel-power", "on")
+            .build_command(1, Dialect::V1, "noise-cancel-power", "on", None)
             .is_none());
         assert!(MicMini
-            .build_command(1, Dialect::V2, "noise-cancel-power", "on")
+            .build_command(1, Dialect::V2, "noise-cancel-power", "on", None)
             .is_some());
+    }
+
+    #[test]
+    fn builds_voice_tone_command_targeted_at_a_specific_tx() {
+        // Voice Tone addresses one physical transmitter (unit 1 or 2), not a
+        // broadcast — this must fail without a `tx`, and the built packet's
+        // target must match whichever slot was requested.
+        assert!(MicMini
+            .build_command(1, Dialect::V2, "voice-tone", "rich", None)
+            .is_none());
+
+        let pkt_tx1 = MicMini
+            .build_command(1, Dialect::V2, "voice-tone", "rich", Some(0))
+            .unwrap();
+        assert_eq!(pkt_tx1[12], 0x01); // target unit 1, little-endian
+        assert_eq!(pkt_tx1[13], 0x00);
+        assert_eq!(pkt_tx1[19], 0x01); // wire value for "rich"
+
+        let pkt_tx2 = MicMini
+            .build_command(1, Dialect::V2, "voice-tone", "bright", Some(1))
+            .unwrap();
+        assert_eq!(pkt_tx2[12], 0x02); // target unit 2
+        assert_eq!(pkt_tx2[19], 0x02); // wire value for "bright"
+
+        // No v1 equivalent.
+        assert!(MicMini
+            .build_command(1, Dialect::V1, "voice-tone", "rich", Some(0))
+            .is_none());
     }
 }

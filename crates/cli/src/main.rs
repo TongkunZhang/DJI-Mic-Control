@@ -38,6 +38,11 @@ enum Command {
     Get {
         /// Setting id, e.g. `noise-cancel`.
         setting: String,
+        /// Transmitter slot (1 or 2), for a setting that targets one
+        /// specific TX rather than the receiver or both transmitters at
+        /// once (currently just `voice-tone`).
+        #[arg(long)]
+        tx: Option<usize>,
     },
     /// Change one setting.
     Set {
@@ -45,6 +50,11 @@ enum Command {
         setting: String,
         /// Value slug, e.g. `strong`.
         value: String,
+        /// Transmitter slot (1 or 2), for a setting that targets one
+        /// specific TX rather than the receiver or both transmitters at
+        /// once (currently just `voice-tone`).
+        #[arg(long)]
+        tx: Option<usize>,
     },
 }
 
@@ -60,19 +70,31 @@ fn main() -> Result<()> {
             let status = wait_connected(&mgr, &id)?;
             print_status(&mgr, &id, &status, cli.json)
         }
-        Command::Get { setting } => {
+        Command::Get { setting, tx } => {
             let id = resolve(&mgr, cli.device.as_deref())?;
             let status = wait_connected(&mgr, &id)?;
-            get(&status, &setting, cli.json)
+            get(&status, &setting, tx, cli.json)
         }
-        Command::Set { setting, value } => {
+        Command::Set { setting, value, tx } => {
             let id = resolve(&mgr, cli.device.as_deref())?;
             wait_connected(&mgr, &id)?;
-            mgr.set(&id, &setting, &value)
-                .with_context(|| format!("setting {setting} = {value}"))?;
+            match tx {
+                Some(slot) => mgr.set_tx(&id, slot_index(slot)?, &setting, &value),
+                None => mgr.set(&id, &setting, &value),
+            }
+            .with_context(|| format!("setting {setting} = {value}"))?;
             println!("{setting} = {value}  (sent)");
             Ok(())
         }
+    }
+}
+
+/// Validate a user-facing 1-based `--tx` slot and convert it to the 0-based
+/// index the device layer uses.
+fn slot_index(tx: usize) -> Result<usize> {
+    match tx {
+        1 | 2 => Ok(tx - 1),
+        _ => bail!("--tx must be 1 or 2, got {tx}"),
     }
 }
 
@@ -144,17 +166,34 @@ fn list(mgr: &DeviceManager, json: bool) -> Result<()> {
     Ok(())
 }
 
-fn get(status: &DeviceStatus, setting: &str, json: bool) -> Result<()> {
-    let value = status
-        .settings
-        .get(setting)
-        .with_context(|| format!("unknown or unreported setting {setting:?}"))?;
+fn get(status: &DeviceStatus, setting: &str, tx: Option<usize>, json: bool) -> Result<()> {
+    let value = match tx {
+        Some(slot) => {
+            let i = slot_index(slot)?;
+            tx_setting_value(status.tx[i].as_ref(), setting)
+                .with_context(|| format!("unknown or unreported TX{slot} setting {setting:?}"))?
+        }
+        None => status
+            .settings
+            .get(setting)
+            .cloned()
+            .with_context(|| format!("unknown or unreported setting {setting:?}"))?,
+    };
     if json {
         println!("{}", serde_json::json!({ setting: value }));
     } else {
         println!("{value}");
     }
     Ok(())
+}
+
+/// Read a setting that's addressed to one specific transmitter rather than
+/// the shared `status.settings` map (currently just `voice-tone`).
+fn tx_setting_value(tx: Option<&TxInfo>, setting: &str) -> Option<String> {
+    match setting {
+        "voice-tone" => tx?.voice_tone.clone(),
+        _ => None,
+    }
 }
 
 /// Render an optional identity/level field, e.g. a TX's serial when the
@@ -186,10 +225,11 @@ fn print_status(mgr: &DeviceManager, id: &str, status: &DeviceStatus, json: bool
         let label = tx_label(i, tx.as_ref());
         match tx {
             Some(t) => println!(
-                "{label}:      serial {}  fw {}  level {}",
+                "{label}:      serial {}  fw {}  level {}  tone {}",
                 unknown(&t.serial),
                 unknown(&t.firmware),
-                unknown(&t.level)
+                unknown(&t.level),
+                unknown(&t.voice_tone)
             ),
             None => println!("{label}:      (off)"),
         }

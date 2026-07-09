@@ -64,6 +64,20 @@ pub fn set_setting(
     mgr.set(&device, &setting, &value).map_err(|e| e.to_string())
 }
 
+/// Change one setting on a specific transmitter slot (0-based) of a device —
+/// for a setting that targets one TX individually rather than mirroring
+/// across both (currently just Voice Tone).
+#[tauri::command]
+pub fn set_tx_setting(
+    device: String,
+    tx: usize,
+    setting: String,
+    value: String,
+    mgr: State<'_, Arc<DeviceManager>>,
+) -> Result<(), String> {
+    mgr.set_tx(&device, tx, &setting, &value).map_err(|e| e.to_string())
+}
+
 /// The udev rule and instructions for Linux setup.
 #[tauri::command]
 pub fn udev_help() -> UdevHelp {

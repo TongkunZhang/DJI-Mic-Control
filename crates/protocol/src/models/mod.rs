@@ -45,16 +45,23 @@ pub trait DeviceModel: Send + Sync {
     /// Build a command packet setting `setting_id` to the option `value`, in
     /// the wire shape `dialect` calls for.
     ///
+    /// `tx` is the 0-based transmitter slot to address, required (and only
+    /// consulted) when the setting's [`V2Target`](crate::settings::V2Target)
+    /// is `Tx` — e.g. Voice Tone, which doesn't mirror across TX the way
+    /// every other transmitter setting does.
+    ///
     /// The default implementation frames a standard DUML command from the
     /// setting's command id(s) and the option's wire byte. Returns `None` if
-    /// the setting or value is unknown, or if `setting_id` doesn't exist under
-    /// `dialect` (e.g. a v2-only setting requested in [`Dialect::V1`]).
+    /// the setting or value is unknown, `setting_id` doesn't exist under
+    /// `dialect` (e.g. a v2-only setting requested in [`Dialect::V1`]), or a
+    /// `Tx`-targeted setting was built without a `tx`.
     fn build_command(
         &self,
         seq: u16,
         dialect: Dialect,
         setting_id: &str,
         value: &str,
+        tx: Option<usize>,
     ) -> Option<Vec<u8>> {
         let setting = self.settings().iter().find(|s| s.id == setting_id)?;
         let option = setting.option(value)?;
@@ -63,12 +70,13 @@ pub trait DeviceModel: Send + Sync {
                 let command = setting.v1_command?;
                 Some(packet::build_v1_command(seq, command, option.wire))
             }
-            Dialect::V2 => Some(packet::build_v2_command(
-                seq,
-                setting.v2_target,
-                setting.v2_command,
-                option.wire,
-            )),
+            Dialect::V2 => {
+                let target = match setting.v2_target {
+                    crate::settings::V2Target::Fixed(t) => t,
+                    crate::settings::V2Target::Tx => u16::try_from(tx?).ok()?.checked_add(1)?,
+                };
+                Some(packet::build_v2_command(seq, target, setting.v2_command, option.wire))
+            }
         }
     }
 

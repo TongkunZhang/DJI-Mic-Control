@@ -3,7 +3,7 @@
   import Sidebar from "./lib/Sidebar.svelte";
   import DevicePanel from "./lib/DevicePanel.svelte";
   import UdevModal from "./lib/UdevModal.svelte";
-  import { snapshot, setSetting, udevHelp } from "./lib/api.js";
+  import { snapshot, setSetting, setTxSetting, udevHelp } from "./lib/api.js";
 
   // Custom window chrome. macOS keeps its native traffic lights (via the
   // Overlay title bar); Windows/Linux use our own frameless controls.
@@ -32,6 +32,11 @@
   let sidebarOpen = $state(true);
   let pending = $state({});
   let optimistic = $state({}); // values shown immediately, before the device confirms
+  // Per-TX-targeted settings (currently just Voice Tone) don't fit the flat
+  // `settings`/`optimistic` maps above, since the same setting id can hold a
+  // different value per transmitter slot — keyed by 0-based TX index instead.
+  let pendingTx = $state({});
+  let optimisticVoiceTone = $state({});
   let view = $state("compact");
   let error = $state(null);
 
@@ -40,9 +45,18 @@
 
   const devices = $derived(snap?.devices ?? []);
   const selectedDevice = $derived(devices.find((d) => d.id === selected) ?? null);
-  const status = $derived(selectedDevice ? snap?.status ?? null : null);
+  const rawStatus = $derived(selectedDevice ? snap?.status ?? null : null);
   // Merge live values with any not-yet-confirmed local changes for instant feedback.
-  const values = $derived({ ...(status?.settings ?? {}), ...optimistic });
+  const values = $derived({ ...(rawStatus?.settings ?? {}), ...optimistic });
+  // Same, for each TX slot's Voice Tone.
+  const status = $derived(
+    rawStatus && {
+      ...rawStatus,
+      tx: rawStatus.tx.map((t, i) =>
+        t && optimisticVoiceTone[i] !== undefined ? { ...t, voice_tone: optimisticVoiceTone[i] } : t,
+      ),
+    },
+  );
   const linuxAccessIssue = $derived(
     snap?.os === "linux" && snap?.probe?.permission_issue && devices.length === 0,
   );
@@ -70,6 +84,18 @@
         }
       }
       if (changed) optimistic = remaining;
+
+      // Same, for each TX slot's Voice Tone.
+      const confirmedTx = next.status?.tx ?? [];
+      let changedTx = false;
+      const remainingTx = { ...optimisticVoiceTone };
+      for (const k of Object.keys(remainingTx)) {
+        if (confirmedTx[k]?.voice_tone === remainingTx[k]) {
+          delete remainingTx[k];
+          changedTx = true;
+        }
+      }
+      if (changedTx) optimisticVoiceTone = remainingTx;
     } catch (e) {
       error = String(e);
     }
@@ -95,6 +121,28 @@
     } finally {
       const { [settingId]: _p, ...rest } = pending;
       pending = rest;
+    }
+  }
+
+  async function changeTx(tx, settingId, value) {
+    if (!selected) return;
+    // Only Voice Tone exists today; extend this map if a second per-TX
+    // setting is added.
+    if (settingId === "voice-tone") {
+      optimisticVoiceTone = { ...optimisticVoiceTone, [tx]: value }; // reflect instantly
+    }
+    pendingTx = { ...pendingTx, [tx]: true };
+    error = null;
+    try {
+      await setTxSetting(selected, tx, settingId, value);
+      await refresh();
+    } catch (e) {
+      error = String(e);
+      const { [tx]: _drop, ...rest } = optimisticVoiceTone;
+      optimisticVoiceTone = rest;
+    } finally {
+      const { [tx]: _p, ...rest } = pendingTx;
+      pendingTx = rest;
     }
   }
 
@@ -183,8 +231,10 @@
           settings={snap.settings}
           {values}
           {pending}
+          {pendingTx}
           {view}
           onchange={change}
+          onchangeTx={changeTx}
           onview={(v) => (view = v)}
         />
       {:else}

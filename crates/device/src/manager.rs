@@ -5,7 +5,7 @@ use std::io::ErrorKind;
 use std::sync::atomic::Ordering;
 use std::sync::Mutex;
 
-use protocol::{model_for_usb, DeviceModel, DeviceStatus, Setting};
+use protocol::{model_for_usb, DeviceModel, DeviceStatus, Setting, V2Target};
 use serde::Serialize;
 
 use crate::actor::{self, now_millis, Actor};
@@ -197,7 +197,24 @@ impl DeviceManager {
     }
 
     /// Apply `value` to `setting` on device `id`, blocking until acknowledged.
+    ///
+    /// For a setting addressed to one specific transmitter (its
+    /// [`V2Target`] is `Tx`, e.g. Voice Tone), use
+    /// [`set_tx`](Self::set_tx) instead.
     pub fn set(&self, id: &str, setting: &str, value: &str) -> Result<()> {
+        self.send_set(id, setting, value, None)
+    }
+
+    /// Apply `value` to `setting` on transmitter slot `tx` (0-based) of
+    /// device `id`, blocking until acknowledged. Only valid for a setting
+    /// addressed to one specific transmitter (its [`V2Target`] is `Tx`, e.g.
+    /// Voice Tone) — every other setting mirrors across TX or targets the
+    /// receiver and should use [`set`](Self::set).
+    pub fn set_tx(&self, id: &str, tx: usize, setting: &str, value: &str) -> Result<()> {
+        self.send_set(id, setting, value, Some(tx))
+    }
+
+    fn send_set(&self, id: &str, setting: &str, value: &str, tx: Option<usize>) -> Result<()> {
         let cmd_tx = {
             let handles = self.handles.lock().unwrap();
             let h = handles.get(id).ok_or_else(|| DeviceError::NotFound(id.to_string()))?;
@@ -215,6 +232,13 @@ impl DeviceManager {
                     value: value.to_string(),
                 });
             }
+            match (desc.v2_target, tx) {
+                (V2Target::Tx, None) => return Err(DeviceError::RequiresTx(setting.to_string())),
+                (V2Target::Fixed(_), Some(_)) => {
+                    return Err(DeviceError::UnexpectedTx(setting.to_string()))
+                }
+                _ => {}
+            }
             h.actor.cmd_tx.clone()
         };
 
@@ -223,6 +247,7 @@ impl DeviceManager {
             .send_blocking(actor::Command {
                 setting_id: setting.to_string(),
                 value: value.to_string(),
+                tx,
                 resp: resp_tx,
             })
             .map_err(|_| DeviceError::Disconnected)?;

@@ -22,6 +22,16 @@ pub enum DeviceError {
     #[error("invalid value {value:?} for setting {setting:?}")]
     UnknownValue { setting: String, value: String },
 
+    /// The setting addresses one specific transmitter (see `V2Target::Tx`,
+    /// e.g. Voice Tone) and needs `DeviceManager::set_tx`, not `set`.
+    #[error("setting {0:?} must be targeted at a specific transmitter (use set_tx)")]
+    RequiresTx(String),
+
+    /// The setting doesn't address a specific transmitter and needs
+    /// `DeviceManager::set`, not `set_tx`.
+    #[error("setting {0:?} does not target a specific transmitter (use set)")]
+    UnexpectedTx(String),
+
     /// A USB transfer failed.
     #[error("usb error: {0}")]
     Usb(String),

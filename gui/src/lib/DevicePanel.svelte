@@ -9,8 +9,10 @@
     settings = [],
     values = {},
     pending = {},
+    pendingTx = {},
     view = "compact",
     onchange,
+    onchangeTx,
     onview,
   } = $props();
 
@@ -44,10 +46,15 @@
   // a single placeholder, at the position the first of them would have
   // occupied, before grouping/columning.
   const NC_IDS = new Set(["noise-cancel", "noise-cancel-power", "noise-cancel-button"]);
+  // Settings addressed to one specific TX (rather than the receiver or a
+  // broadcast to both) don't fit this shared list at all — they're rendered
+  // on their own TX card instead (see the Voice Tone control below).
+  const TX_TARGETED_IDS = new Set(["voice-tone"]);
   const renderSettings = $derived.by(() => {
     const out = [];
     let ncInserted = false;
     for (const s of settings) {
+      if (TX_TARGETED_IDS.has(s.id)) continue;
       if (NC_IDS.has(s.id)) {
         if (!ncInserted) {
           out.push({ id: "__nc-group", group: s.group, __ncComposite: true });
@@ -180,6 +187,17 @@
               <div class="unfilled" style="left:{levelPct(tx.level)}%"></div>
             </div>
           </div>
+          {#if tx.product_name === "DJI Mic Mini 2" && status.protocol_version === 2 && settingsById["voice-tone"]}
+            <div class="tone">
+              <SettingControl
+                setting={settingsById["voice-tone"]}
+                value={tx.voice_tone ?? null}
+                pending={!!pendingTx[i]}
+                compact
+                onchange={(settingId, value) => onchangeTx?.(i, settingId, value)}
+              />
+            </div>
+          {/if}
         {:else}
           <div class="muted">Disconnected</div>
         {/if}
@@ -377,6 +395,9 @@
   }
   .level {
     margin-top: 8px;
+  }
+  .tone {
+    margin-top: 10px;
   }
   .lvl-label {
     font-size: 12px;

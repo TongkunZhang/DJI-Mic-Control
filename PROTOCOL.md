@@ -121,7 +121,7 @@ instead of big-endian. Example (Noise Cancel → Basic, broadcast to both TX):
 | 9      | 1   | `0x5b`   | Constant                                           |
 | 10     | 1   | `0x01`   | Constant                                           |
 | 11     | 1   | `0x02`   | Target-addressed command sub-type                   |
-| 12     | 2   | target LE| `0x0000` = receiver, `0xffff` = broadcast to TX     |
+| 12     | 2   | target LE| `0x0000` = receiver, `0xffff` = broadcast to TX, or `0x0001`/`0x0002` for one specific TX unit (see Voice Tone) |
 | 14     | 2   | `0x0000` | Constant                                           |
 | 16     | 2   | cmd LE   | Command id, 16-bit **little-endian**                |
 | 18     | 1   | `0x01`   | Payload length (1)                                  |
@@ -147,6 +147,7 @@ those don't exist on v1 firmware at all.
 | Turn on with camera                   | `0x0020`   | `0x0020`     | receiver    | `0x00` off, `0x01` on             |
 | Plug-free external speaker            | `0x0023`   | `0x0023`     | receiver    | `0x00` off, `0x01` on             |
 | Mic LEDs                              | `0x030a`   | `0x000a`     | broadcast   | `0x00` on, `0x02` off (inverted)  |
+| Voice Tone (**new**, Mic Mini 2 only)  | —          | `0x0029`     | one TX unit | `0x00` Standard, `0x01` Rich, `0x02` Bright |
 
 Notes:
 
@@ -165,6 +166,12 @@ Notes:
 - Whether any setting besides noise cancel mode has a *different* command id
   between versions beyond what's listed here is unconfirmed — everything else
   reused its v1 id verbatim.
+- Voice Tone is the only setting that targets one specific transmitter
+  (`0x0001` or `0x0002`) rather than broadcasting to both — every other TX
+  setting mirrors identically across whichever units are connected. It's
+  also the only setting confirmed to exist on one hardware generation (DJI
+  Mic Mini 2) but not another (the original DJI Mic Mini); every other
+  setting has been exercised on both.
 
 ---
 
@@ -411,8 +418,10 @@ The slot turns out to be a 6-byte record header — the same
 audio-level records below — followed by 26 bytes of data, of which only 4
 are understood. Low Cut, Mic LEDs, TX Auto Off, and the NC-button permission
 have **no header-level fallback** — they're only knowable when at least one
-TX is connected, since they're purely per-transmitter settings that mirror
-identically across whichever TX are present.
+TX is connected, since they're purely per-transmitter settings. Everything
+in this slot mirrors identically across whichever TX are present **except**
+Voice Tone (`+9` bits `0x40`/`0x80`), which is genuinely independent per
+transmitter — see the Voice Tone note in Commands above.
 
 | Slot offset | Len | Description                                                        |
 | ----------- | --- | --------------------------------------------------------------------- |
@@ -423,7 +432,7 @@ identically across whichever TX are present.
 | +6          | 1   | Flags: `0x02` LEDs off (inverted), `0x10` TX auto-off active, `0x20` strong NC (mirror), `0x80` NC-button-toggle permission active |
 | +7          | 1   | Flags: `0x01` NC enabled (mirror of offset-20 bit `0x20`); constant bits `0x24` also set, purpose unknown |
 | +8          | 1   | Flags: `0x04` clip limiter active (mirror of offset-48 bit `0x10`)    |
-| +9          | 1   | Flags: `0x20` low cut active; a constant bit `0x01` also set, purpose unknown |
+| +9          | 1   | Flags: `0x20` low cut active, `0x40` Voice Tone = Rich, `0x80` Voice Tone = Bright (neither set = Standard; Mic Mini 2 only — see Commands); a constant bit `0x01` also set, purpose unknown |
 | +10         | 1   | Constant zero                                                          |
 | +11         | 1   | Constant `0x78`, purpose unknown                                      |
 | +12–+31     | 20  | Constant zero                                                         |

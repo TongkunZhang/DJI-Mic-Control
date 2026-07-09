@@ -487,6 +487,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             commands::snapshot,
             commands::set_setting,
+            commands::set_tx_setting,
             commands::udev_help,
         ])
         .run(tauri::generate_context!())

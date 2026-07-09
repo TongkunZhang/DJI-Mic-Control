@@ -41,6 +41,10 @@ pub struct TxInfo {
     /// Product name as the transmitter reports it, e.g. `"DJI Mic Mini"` or
     /// `"DJI Mic Mini 2"` — v2 firmware only (see `PROTOCOL.md`).
     pub product_name: Option<String>,
+    /// Voice Tone (`"standard"`/`"rich"`/`"bright"`) — a DJI Mic Mini 2
+    /// feature; other transmitters always report `"standard"` once
+    /// connected on v2 firmware, `None` on v1 (see `PROTOCOL.md`).
+    pub voice_tone: Option<String>,
 }
 
 /// State of the receiver. `serial`/`firmware` are `None` when not yet known

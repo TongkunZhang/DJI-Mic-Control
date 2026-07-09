@@ -12,5 +12,5 @@ pub mod settings;
 pub mod state;
 
 pub use models::{model_by_id, model_for_usb, DeviceModel, MODELS};
-pub use settings::{Setting, SettingKind, SettingOption};
+pub use settings::{Setting, SettingKind, SettingOption, V2Target};
 pub use state::{DeviceStatus, Firmware, RxInfo, TxInfo};
