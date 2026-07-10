@@ -285,6 +285,8 @@ fn parse_v1_slot(f: &[u8], off: usize) -> Option<V1Slot> {
                 firmware: Some(firmware),
                 product_name: None,
                 voice_tone: None,
+                charging: None,
+                battery: None,
             }),
             state,
             flags,
@@ -414,13 +416,16 @@ fn decode_v2_status(previous: &DeviceStatus, f: &[u8]) -> Option<DeviceStatus> {
                 firmware: None,
                 product_name: None,
                 voice_tone: None,
+                charging: None,
+                battery: None,
             })
         })
     });
-    // Voice Tone doesn't mirror across TX the way every other per-transmitter
-    // setting does (see `PROTOCOL.md`), so — unlike `tx_flags`/`low_cut_flags`
-    // above — each present slot's own bits are read individually, keyed by
-    // that slot's own physical unit byte at `+1`.
+    // Voice Tone, charging, and battery level don't mirror across TX the way
+    // every other per-transmitter setting does (see `PROTOCOL.md`), so —
+    // unlike `tx_flags`/`low_cut_flags` above — each present slot's own bits
+    // are read individually, keyed by that slot's own physical unit byte at
+    // `+1`.
     for slot_pos in 0..tx_count {
         let slot_off = V2_HEADER_LEN + V2_TX_SLOT_LEN * slot_pos;
         let unit = f[slot_off + 1];
@@ -437,6 +442,15 @@ fn decode_v2_status(previous: &DeviceStatus, f: &[u8]) -> Option<DeviceStatus> {
                 }
                 .into(),
             );
+            let battery_flags = f[slot_off + 7];
+            tx.charging = Some(battery_flags & 0x02 != 0);
+            tx.battery = if battery_flags & 0x10 != 0 {
+                Some(if battery_flags & 0x08 != 0 { "warning-low" } else { "low" }.into())
+            } else if battery_flags & 0x04 != 0 {
+                Some("full".into())
+            } else {
+                None
+            };
         }
     }
     status.rx =
@@ -526,6 +540,8 @@ fn decode_v2_records(previous: &DeviceStatus, f: &[u8]) -> Option<DeviceStatus> 
                                 firmware: None,
                                 product_name: None,
                                 voice_tone: None,
+                                charging: None,
+                                battery: None,
                             });
                             tx.serial = Some(serial);
                             tx.firmware = Some(firmware);
@@ -544,6 +560,8 @@ fn decode_v2_records(previous: &DeviceStatus, f: &[u8]) -> Option<DeviceStatus> 
                         firmware: None,
                         product_name: None,
                         voice_tone: None,
+                        charging: None,
+                        battery: None,
                     })
                     .level = Some(data[0]);
                 }
@@ -558,6 +576,8 @@ fn decode_v2_records(previous: &DeviceStatus, f: &[u8]) -> Option<DeviceStatus> 
                         firmware: None,
                         product_name: None,
                         voice_tone: None,
+                        charging: None,
+                        battery: None,
                     })
                     .product_name = Some(read_ascii_field(data));
                 }
@@ -756,6 +776,58 @@ mod tests {
         assert_eq!(st.tx[1].as_ref().unwrap().voice_tone.as_deref(), Some("bright"));
     }
 
+    /// The same shape as [`sample_2tx_v2`], but TX2's `+7` bit `0x02` is
+    /// set — the docked/charging state.
+    fn sample_2tx_v2_tx2_charging() -> Vec<u8> {
+        let hex = "557604a65a020000005b0303660003000000002028310c000000000000000000000000000000000000000000030000001c00000002010000001ab82504010078000000000000000000000000000000000000000002020000001ab827040100780000000000000000000000000000000000000000";
+        crate::crc::append(hex_body(hex), crate::crc::V2_INIT, crate::crc::V2_RESIDUE)
+    }
+
+    #[test]
+    fn decodes_charging_independently_per_tx() {
+        let st = MicMini
+            .decode(&fresh_status(), &sample_2tx_v2_tx2_charging())
+            .expect("decode");
+        assert_eq!(st.tx[0].as_ref().unwrap().charging, Some(false));
+        assert_eq!(st.tx[1].as_ref().unwrap().charging, Some(true));
+    }
+
+    /// The same shape as [`sample_2tx_v2`] (TX1's `+7` stays `0x25`, the
+    /// full-battery bracket), but TX2's `+7` is overridden per case to cover
+    /// every known battery-level bit combination.
+    fn sample_2tx_v2_tx2_battery(tx2_plus7: u8) -> Vec<u8> {
+        let hex = format!(
+            "557604a65a020000005b0303660003000000002028310c000000000000000000000000000000000000000000030000001c\
+             00000002010000001ab82504010078000000000000000000000000000000000000000002020000001ab8{tx2_plus7:02x}\
+             040100780000000000000000000000000000000000000000"
+        );
+        crate::crc::append(hex_body(&hex), crate::crc::V2_INIT, crate::crc::V2_RESIDUE)
+    }
+
+    #[test]
+    fn decodes_battery_level_independently_per_tx() {
+        // TX2 warning-low (0x10 + 0x08 on top of the base 0x21), TX1 stays
+        // full (0x04 on top of the base) — the two battery bits aren't a
+        // simple mirror the way most TX settings are.
+        let st = MicMini
+            .decode(&fresh_status(), &sample_2tx_v2_tx2_battery(0x39))
+            .expect("decode");
+        assert_eq!(st.tx[0].as_ref().unwrap().battery.as_deref(), Some("full"));
+        assert_eq!(st.tx[1].as_ref().unwrap().battery.as_deref(), Some("warning-low"));
+
+        // Low without the warning bit (0x10 alone).
+        let st = MicMini
+            .decode(&fresh_status(), &sample_2tx_v2_tx2_battery(0x31))
+            .expect("decode");
+        assert_eq!(st.tx[1].as_ref().unwrap().battery.as_deref(), Some("low"));
+
+        // Neither battery bit set: an unrecognised level, not a known state.
+        let st = MicMini
+            .decode(&fresh_status(), &sample_2tx_v2_tx2_battery(0x21))
+            .expect("decode");
+        assert_eq!(st.tx[1].as_ref().unwrap().battery, None);
+    }
+
     /// A synthetic receiver-only identity push (70 bytes), CRC stripped.
     fn sample_identity_rx_only() -> Vec<u8> {
         let hex = concat!(
@@ -877,8 +949,8 @@ mod tests {
         // `previous` as the status push already would have.
         let mut previous = fresh_status();
         previous.tx = [
-            Some(TxInfo { level: None, serial: None, firmware: None, product_name: None, voice_tone: None }),
-            Some(TxInfo { level: None, serial: None, firmware: None, product_name: None, voice_tone: None }),
+            Some(TxInfo { level: None, serial: None, firmware: None, product_name: None, voice_tone: None, charging: None, battery: None }),
+            Some(TxInfo { level: None, serial: None, firmware: None, product_name: None, voice_tone: None, charging: None, battery: None }),
         ];
         let st = MicMini.decode(&previous, &sample_level_2tx()).expect("decode");
         assert_eq!(st.tx[0].as_ref().unwrap().level, Some(0x30));

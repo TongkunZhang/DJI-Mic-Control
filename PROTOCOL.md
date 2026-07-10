@@ -420,8 +420,11 @@ are understood. Low Cut, Mic LEDs, TX Auto Off, and the NC-button permission
 have **no header-level fallback** — they're only knowable when at least one
 TX is connected, since they're purely per-transmitter settings. Everything
 in this slot mirrors identically across whichever TX are present **except**
-Voice Tone (`+9` bits `0x40`/`0x80`), which is genuinely independent per
-transmitter — see the Voice Tone note in Commands above.
+Voice Tone (`+9` bits `0x40`/`0x80`), the charging indicator (`+7` bit
+`0x02`), and battery level (`+7` bits `0x04`/`0x08`/`0x10`) — all independent
+per transmitter, since each TX has its own tone setting, its own physical
+dock/charge state, and its own battery level. See the Voice Tone note in
+Commands above.
 
 | Slot offset | Len | Description                                                        |
 | ----------- | --- | --------------------------------------------------------------------- |
@@ -430,7 +433,7 @@ transmitter — see the Voice Tone note in Commands above.
 | +2          | 3   | Constant zero (reserved, matching the record header shape)            |
 | +5          | 1   | Constant `0x1a` (26) — length of the data that follows, i.e. the rest of the slot |
 | +6          | 1   | Flags: `0x02` LEDs off (inverted), `0x10` TX auto-off active, `0x20` strong NC (mirror), `0x80` NC-button-toggle permission active |
-| +7          | 1   | Flags: `0x01` NC enabled (mirror of offset-20 bit `0x20`); constant bits `0x24` also set, purpose unknown |
+| +7          | 1   | Flags: `0x01` NC enabled (mirror of offset-20 bit `0x20`), `0x02` this TX is docked/charging (per-TX, not mirrored — reverts within a tick or two of undocking), `0x04`/`0x08`/`0x10` battery level (per-TX — see below); constant bit `0x20` also set, purpose unknown |
 | +8          | 1   | Flags: `0x04` clip limiter active (mirror of offset-48 bit `0x10`)    |
 | +9          | 1   | Flags: `0x20` low cut active, `0x40` Voice Tone = Rich, `0x80` Voice Tone = Bright (neither set = Standard; Mic Mini 2 only — see Commands); a constant bit `0x01` also set, purpose unknown |
 | +10         | 1   | Constant zero                                                          |
@@ -440,6 +443,21 @@ transmitter — see the Voice Tone note in Commands above.
 Since offset `+1` gives the physical TX directly, a decoder can place each
 slot's data by real unit number and never needs to guess which physical
 transmitter a lone connected slot belongs to.
+
+**Battery level (`+7` bits `0x04`/`0x08`/`0x10`):** independent per
+transmitter, and independent of the charging bit — both can be set at once.
+Observed states:
+
+| Bits set        | Meaning                                                        |
+| ---------------- | --------------------------------------------------------------- |
+| `0x04`           | Full / healthy                                                  |
+| `0x10`           | Low                                                              |
+| `0x10` and `0x08`| Warning-low (matches the official app's low-battery warning icon) |
+
+These are threshold-crossing flags rather than a linear level: `0x04` clears
+once charge drops below the first threshold, at which point `0x10` sets;
+`0x08` sets in addition to `0x10` on crossing a second, lower threshold. No
+other bit combination has been observed.
 
 ### Identity and audio-level pushes: shared record format
 

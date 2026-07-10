@@ -45,6 +45,15 @@ pub struct TxInfo {
     /// feature; other transmitters always report `"standard"` once
     /// connected on v2 firmware, `None` on v1 (see `PROTOCOL.md`).
     pub voice_tone: Option<String>,
+    /// True while this transmitter is docked/charging (see `PROTOCOL.md`).
+    /// Decoded on v2 firmware; not yet decoded on v1, though nothing about
+    /// it suggests it's v2-specific, so this is always `None` there for now.
+    pub charging: Option<bool>,
+    /// Battery level (`"full"`, `"low"`, or `"warning-low"`) — see
+    /// `PROTOCOL.md`. `None` when the level bits don't match a known
+    /// combination (e.g. a level between the known thresholds), or on v1
+    /// firmware, which this isn't decoded on yet.
+    pub battery: Option<String>,
 }
 
 /// State of the receiver. `serial`/`firmware` are `None` when not yet known
