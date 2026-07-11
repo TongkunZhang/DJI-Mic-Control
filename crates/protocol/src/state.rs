@@ -85,6 +85,10 @@ pub struct DeviceStatus {
     /// `1` for v1 firmware, `2` for v2 firmware (see `PROTOCOL.md`'s
     /// "Protocol versions" section). `None` before the first frame decodes.
     pub protocol_version: Option<u8>,
+    /// The receiver's physical gain dial, in dB (see `PROTOCOL.md`). Decoded
+    /// on v2 firmware; not yet located in v1's heartbeat, so always `None`
+    /// there for now.
+    pub gain_dial: Option<i8>,
 }
 
 impl DeviceStatus {
@@ -98,6 +102,7 @@ impl DeviceStatus {
             rx: None,
             settings: BTreeMap::new(),
             protocol_version: None,
+            gain_dial: None,
         }
     }
 

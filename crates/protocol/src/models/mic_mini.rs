@@ -391,6 +391,7 @@ fn decode_v2_status(previous: &DeviceStatus, f: &[u8]) -> Option<DeviceStatus> {
 
     let flags1 = f[20]; // strong-NC 0x08, NC power 0x20, camera-power 0x80
     let flags2 = f[21]; // auto-off (RX) 0x01, stereo 0x04
+    let gain_dial = f[22] as i8; // signed dB, see PROTOCOL.md
     let flags3 = f[48]; // plug-free 0x02, clip limiter 0x10, safety track 0x40
 
     // Low Cut, Mic LEDs, TX Auto Off, and the NC-button permission are purely
@@ -403,6 +404,7 @@ fn decode_v2_status(previous: &DeviceStatus, f: &[u8]) -> Option<DeviceStatus> {
     let mut status = DeviceStatus::disconnected(MODEL_ID);
     status.connected = true;
     status.nc_enabled = flags1 & 0x20 != 0;
+    status.gain_dial = Some(gain_dial);
     // `V2_TX_CONNECTED_OFFSET`'s bits are the connected/disconnected source
     // of truth per physical TX — identity/level (from `decode_v2_records`)
     // is carried forward under whichever array index the bit for that unit
@@ -733,6 +735,8 @@ mod tests {
         // offset 21 = 0x31 -> auto-off on (0x01), stereo off (0x04 clear).
         assert_eq!(st.settings["auto-off-15m"], "on");
         assert_eq!(st.settings["stereo"], "mono");
+        // offset 22 = 0x0c -> gain dial at +12 dB.
+        assert_eq!(st.gain_dial, Some(12));
         // offset 48 = 0x1c -> plug-free off, clip on (0x10), safety off.
         assert_eq!(st.settings["plug-free"], "off");
         assert_eq!(st.settings["clip-limiter"], "on");
@@ -751,6 +755,21 @@ mod tests {
 
     fn hex_body(hex: &str) -> Vec<u8> {
         (0..hex.len()).step_by(2).map(|i| u8::from_str_radix(&hex[i..i + 2], 16).unwrap()).collect()
+    }
+
+    /// The same shape as [`sample_2tx_v2`], but header offset 22 is `0xf4`
+    /// (-12 as a signed byte) rather than `0x0c` (+12) — confirming the
+    /// gain dial decodes as signed, not just happening to work for a
+    /// positive value.
+    fn sample_2tx_v2_negative_gain() -> Vec<u8> {
+        let hex = "557604a65a020000005b030366000300000000202831f4000000000000000000000000000000000000000000030000001c00000002010000001ab82504010078000000000000000000000000000000000000000002020000001ab825040100780000000000000000000000000000000000000000";
+        crate::crc::append(hex_body(hex), crate::crc::V2_INIT, crate::crc::V2_RESIDUE)
+    }
+
+    #[test]
+    fn decodes_negative_gain_dial() {
+        let st = MicMini.decode(&fresh_status(), &sample_2tx_v2_negative_gain()).expect("decode");
+        assert_eq!(st.gain_dial, Some(-12));
     }
 
     /// The same shape as [`sample_2tx_v2`], but TX1's tone byte (+9) is

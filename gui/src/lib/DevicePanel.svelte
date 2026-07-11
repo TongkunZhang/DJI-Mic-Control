@@ -24,6 +24,9 @@
   // Identity/level fields the model hasn't decoded yet read as null.
   const orUnknown = (v) => v ?? "Unknown";
 
+  // Gain dial in dB: always show a sign except at exactly 0.
+  const formatGain = (v) => (v > 0 ? `+${v}` : `${v}`);
+
   // A transmitter card's title: its own reported product name once known
   // (e.g. "DJI Mic Mini 2 (TX1)"), else the bare slot number.
   const txLabel = (tx, i) => (tx?.product_name ? `${tx.product_name} (TX${i + 1})` : `TX${i + 1}`);
@@ -166,6 +169,12 @@
           <span class="proto-pill" class:v1={status.protocol_version === 1} class:v2={status.protocol_version === 2}>
             v{status.protocol_version}
           </span>
+        </div>
+      {/if}
+      {#if status.gain_dial != null}
+        <div class="kv">
+          <span>Gain</span>
+          <b class="gain" class:zero={status.gain_dial === 0}>{formatGain(status.gain_dial)} dB</b>
         </div>
       {/if}
     </div>
@@ -398,6 +407,12 @@
   .kv b {
     font-weight: 600;
     font-variant-numeric: tabular-nums;
+  }
+  /* Gain dial: orange at 0 (unity), the default (near-black/white) text
+     color otherwise -- +/- both read the same since either direction away
+     from 0 is equally "not neutral". */
+  .gain.zero {
+    color: var(--warn);
   }
   .muted {
     color: var(--text-faint);

@@ -377,6 +377,7 @@ Header offsets that matter (the rest is currently-unidentified constants):
 | 12     | 1   | Capability byte: `0x26`/`0x46`/`0x66` for 0/1/2 TX connected (redundant with frame length) |
 | 20     | 1   | Flags — see below                                                      |
 | 21     | 1   | Flags — see below                                                      |
+| 22     | 1   | Receiver's physical gain dial, signed, in dB — see below              |
 | 44     | 1   | Per-TX connected bitmask — see below                                  |
 | 48     | 1   | Flags — see below                                                      |
 | 52     | 32×N| One slot per connected TX (see below)                                  |
@@ -395,6 +396,10 @@ Header offsets that matter (the rest is currently-unidentified constants):
 | ------ | ---------------------------- |
 | `0x01` | Auto off (receiver) active |
 | `0x04` | Stereo tracking active     |
+
+**Offset 22:** the receiver's physical gain dial, a signed byte read directly
+as dB — no scaling. The dial steps in fixed 6 dB increments across five
+positions: `12`, `6`, `0`, `-6`, `-12`.
 
 **Offset 44:** per-TX connected bitmask — `0x01` = TX1, `0x02` = TX2 (physical
 unit numbering, not slot position). This is the authoritative signal for
