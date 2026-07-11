@@ -172,7 +172,7 @@
   });
 </script>
 
-<div class="app">
+<div class="app" class:mac={isMac}>
   {#if !isMac}
     <div class="rz rz-n" onmousedown={startResize("North")}></div>
     <div class="rz rz-s" onmousedown={startResize("South")}></div>
@@ -273,6 +273,14 @@
     height: 100%;
     display: flex;
     flex-direction: column;
+    /* The window is frameless on some platforms (no native border/shadow),
+       so a solid-color desktop behind it can make the edge disappear
+       entirely without this. Not needed on macOS, which already has native
+       decorations (see .mac below). */
+    border: 1px solid var(--border);
+  }
+  .app.mac {
+    border: none;
   }
   /* Invisible resize handles pinned to the window edges/corners. */
   .rz {
