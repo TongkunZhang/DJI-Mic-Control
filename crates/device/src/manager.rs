@@ -123,10 +123,6 @@ impl DeviceManager {
             }
 
             let opened = info.open().and_then(|dev| {
-                // Detach only the interfaces the model says block bulk I/O (the
-                // HID interface for the Mic Mini). Crucially we leave the USB
-                // Audio interfaces bound so the device stays a usable mic.
-                // Errors (already detached, unsupported platform) are ignored.
                 for &iface in model.detach_interfaces() {
                     let _ = dev.detach_kernel_driver(iface);
                 }

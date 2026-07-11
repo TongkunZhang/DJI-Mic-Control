@@ -608,12 +608,6 @@ impl DeviceModel for MicMini {
     fn interface(&self) -> u8 {
         6
     }
-    fn detach_interfaces(&self) -> &'static [u8] {
-        // Only the HID interface (0) blocks bulk I/O. Interfaces 1–3 are USB
-        // Audio and must stay bound to snd-usb-audio so the mic still works as a
-        // recording device.
-        &[0]
-    }
     fn bulk_in(&self) -> u8 {
         0x86
     }
