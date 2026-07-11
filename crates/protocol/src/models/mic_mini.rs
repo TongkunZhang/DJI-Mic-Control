@@ -444,13 +444,7 @@ fn decode_v2_status(previous: &DeviceStatus, f: &[u8]) -> Option<DeviceStatus> {
             );
             let battery_flags = f[slot_off + 7];
             tx.charging = Some(battery_flags & 0x02 != 0);
-            tx.battery = if battery_flags & 0x10 != 0 {
-                Some(if battery_flags & 0x08 != 0 { "warning-low" } else { "low" }.into())
-            } else if battery_flags & 0x04 != 0 {
-                Some("full".into())
-            } else {
-                None
-            };
+            tx.battery = Some((battery_flags >> 2) & 0x07);
         }
     }
     status.rx =
@@ -792,9 +786,9 @@ mod tests {
         assert_eq!(st.tx[1].as_ref().unwrap().charging, Some(true));
     }
 
-    /// The same shape as [`sample_2tx_v2`] (TX1's `+7` stays `0x25`, the
-    /// full-battery bracket), but TX2's `+7` is overridden per case to cover
-    /// every known battery-level bit combination.
+    /// The same shape as [`sample_2tx_v2`] (TX1's `+7` stays `0x25`, battery
+    /// gauge value 1), but TX2's `+7` is overridden per case to cover the
+    /// battery gauge's range.
     fn sample_2tx_v2_tx2_battery(tx2_plus7: u8) -> Vec<u8> {
         let hex = format!(
             "557604a65a020000005b0303660003000000002028310c000000000000000000000000000000000000000000030000001c\
@@ -805,27 +799,33 @@ mod tests {
     }
 
     #[test]
-    fn decodes_battery_level_independently_per_tx() {
-        // TX2 warning-low (0x10 + 0x08 on top of the base 0x21), TX1 stays
-        // full (0x04 on top of the base) — the two battery bits aren't a
-        // simple mirror the way most TX settings are.
+    fn decodes_battery_gauge_independently_per_tx() {
+        // The `+7` battery bits (`0x1c`) are a 3-bit gauge read as
+        // `(byte >> 2) & 0x07`, not a mirrored flag — TX1 stays at gauge
+        // value 1 (`0x04` on top of the base `0x21`) while TX2 varies.
         let st = MicMini
             .decode(&fresh_status(), &sample_2tx_v2_tx2_battery(0x39))
             .expect("decode");
-        assert_eq!(st.tx[0].as_ref().unwrap().battery.as_deref(), Some("full"));
-        assert_eq!(st.tx[1].as_ref().unwrap().battery.as_deref(), Some("warning-low"));
+        assert_eq!(st.tx[0].as_ref().unwrap().battery, Some(1));
+        assert_eq!(st.tx[1].as_ref().unwrap().battery, Some(6)); // 0x08|0x10
 
-        // Low without the warning bit (0x10 alone).
         let st = MicMini
             .decode(&fresh_status(), &sample_2tx_v2_tx2_battery(0x31))
             .expect("decode");
-        assert_eq!(st.tx[1].as_ref().unwrap().battery.as_deref(), Some("low"));
+        assert_eq!(st.tx[1].as_ref().unwrap().battery, Some(4)); // 0x10 alone
 
-        // Neither battery bit set: an unrecognised level, not a known state.
+        // All three bits set: the terminal reading before auto-shutoff.
+        let st = MicMini
+            .decode(&fresh_status(), &sample_2tx_v2_tx2_battery(0x3d))
+            .expect("decode");
+        assert_eq!(st.tx[1].as_ref().unwrap().battery, Some(7));
+
+        // No battery bits set: gauge value 0 (believed unreachable in
+        // practice, but the decoder must still represent it correctly).
         let st = MicMini
             .decode(&fresh_status(), &sample_2tx_v2_tx2_battery(0x21))
             .expect("decode");
-        assert_eq!(st.tx[1].as_ref().unwrap().battery, None);
+        assert_eq!(st.tx[1].as_ref().unwrap().battery, Some(0));
     }
 
     /// A synthetic receiver-only identity push (70 bytes), CRC stripped.

@@ -2,6 +2,7 @@
   import DevicePicto from "./DevicePicto.svelte";
   import SettingControl from "./SettingControl.svelte";
   import NoiseCancelControl from "./NoiseCancelControl.svelte";
+  import BatteryIcon from "./BatteryIcon.svelte";
 
   let {
     device,
@@ -173,7 +174,12 @@
       {@const picto = txPictogram(tx, status.protocol_version)}
       <div class="card">
         <div class="card-head">
-          <span class="card-title">{txLabel(tx, i)}</span>
+          <span class="card-title">
+            {txLabel(tx, i)}
+            {#if tx}
+              <BatteryIcon value={tx.battery} charging={!!tx.charging} />
+            {/if}
+          </span>
           {#if picto}
             <DevicePicto pictogram={picto} size={38} />
           {/if}
@@ -349,6 +355,9 @@
     min-height: 40px;
   }
   .card-title {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
     font-size: 11px;
     font-weight: 700;
     letter-spacing: 0.05em;

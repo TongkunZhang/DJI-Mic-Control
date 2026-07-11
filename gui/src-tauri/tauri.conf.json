@@ -13,8 +13,8 @@
     "windows": [
       {
         "title": "DJI Mic Control",
-        "width": 1040,
-        "height": 700,
+        "width": 1300,
+        "height": 775,
         "minWidth": 760,
         "minHeight": 540,
         "decorations": false,

@@ -1,10 +1,18 @@
 <script>
   import DevicePicto from "./DevicePicto.svelte";
+  import BatteryIcon from "./BatteryIcon.svelte";
 
   let { devices = [], selected = null, onselect } = $props();
 </script>
 
-<aside class="sidebar">
+<aside
+  class="sidebar"
+  onclick={(e) => {
+    /* Clicking anywhere that isn't a device row (the header, gaps between
+       rows, or empty space below the list) deselects the current device. */
+    if (!e.target.closest(".device")) onselect?.(null);
+  }}
+>
   <div class="sidebar-head">Devices</div>
 
   {#if devices.length === 0}
@@ -24,6 +32,18 @@
             <span class="labels">
               <span class="name">{d.model_name}</span>
               <span class="serial">{d.rx_serial ?? d.id}</span>
+              {#if d.tx?.some((t) => t)}
+                <span class="tx-batteries">
+                  {#each d.tx as tx, i}
+                    {#if tx}
+                      <span class="tx-battery">
+                        <span class="tx-battery-label">TX{i + 1}</span>
+                        <BatteryIcon value={tx.battery} charging={!!tx.charging} size={16} />
+                      </span>
+                    {/if}
+                  {/each}
+                </span>
+              {/if}
             </span>
             <span
               class="dot"
@@ -39,7 +59,7 @@
 
 <style>
   .sidebar {
-    width: 240px;
+    width: 260px;
     height: 100%;
     background: var(--bg-panel);
     display: flex;
@@ -61,17 +81,17 @@
   .device-list {
     list-style: none;
     margin: 0;
-    padding: 4px 8px;
+    padding: 6px 10px;
     display: flex;
     flex-direction: column;
-    gap: 2px;
+    gap: 5px;
   }
   .device {
     width: 100%;
     display: flex;
     align-items: center;
     gap: 12px;
-    padding: 8px 10px;
+    padding: 10px 12px;
     border: 1px solid transparent;
     border-radius: var(--radius-sm);
     background: transparent;
@@ -111,6 +131,22 @@
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+  }
+  .tx-batteries {
+    display: flex;
+    gap: 12px;
+    margin-top: 4px;
+  }
+  .tx-battery {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+  }
+  .tx-battery-label {
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    color: var(--text-faint);
   }
   .dot {
     flex: 0 0 auto;

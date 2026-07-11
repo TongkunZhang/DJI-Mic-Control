@@ -29,6 +29,10 @@
 
   let snap = $state(null);
   let selected = $state(null);
+  // Distinguishes "nothing selected yet" (auto-select the first device once
+  // one shows up) from "the user deliberately cleared the selection" (leave
+  // it cleared until they pick one again).
+  let userDeselected = $state(false);
   let sidebarOpen = $state(true);
   let pending = $state({});
   let optimistic = $state({}); // values shown immediately, before the device confirms
@@ -65,8 +69,9 @@
     try {
       const next = await snapshot(selected);
       snap = next;
-      // Auto-select once devices show up.
-      if (!selected && next.devices.length > 0) {
+      // Auto-select once devices show up, unless the user deliberately
+      // cleared the selection (clicking empty space in the sidebar).
+      if (!selected && !userDeselected && next.devices.length > 0) {
         selected = next.devices[0].id;
       }
       // Drop a stale selection.
@@ -103,6 +108,7 @@
 
   function select(id) {
     selected = id;
+    userDeselected = id === null;
     refresh();
   }
 
@@ -244,6 +250,9 @@
               <h2>Permission needed</h2>
               <p>A supported microphone is connected but can't be accessed.</p>
               <button class="cta" onclick={openUdev}>Show setup instructions</button>
+            {:else if devices.length > 0}
+              <h2>No device selected</h2>
+              <p>Choose a device from the sidebar.</p>
             {:else}
               <h2>No microphone connected</h2>
               <p>Connect a supported DJI microphone over USB to get started.</p>
@@ -425,7 +434,7 @@
      Sidebar keeps a fixed width and is clipped, giving a smooth slide. */
   .sidebar-wrap {
     flex: 0 0 auto;
-    width: 240px;
+    width: 260px;
     overflow: hidden;
     border-right: 1px solid var(--border);
     transition: width 0.22s ease, border-color 0.22s ease;

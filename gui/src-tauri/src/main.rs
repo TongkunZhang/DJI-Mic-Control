@@ -271,6 +271,107 @@ fn draw_line(
     }
 }
 
+/// Worst-case battery state across every connected transmitter of every
+/// tracked device. Drives the tray icon's low-battery warning: gauge value
+/// `6` is where the transmitter's own LED and the main UI turn red, `7` is
+/// the terminal reading immediately before auto-shutoff (see `PROTOCOL.md`).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum BatteryAlert {
+    Normal,
+    Red,
+    Critical,
+}
+
+fn battery_alert(app: &AppHandle) -> BatteryAlert {
+    let mgr = app.state::<Arc<DeviceManager>>().inner().clone();
+    let mut worst = BatteryAlert::Normal;
+    for d in mgr.list() {
+        let Ok(st) = mgr.status(&d.id) else { continue };
+        for tx in st.tx.iter().flatten() {
+            match tx.battery {
+                Some(7) => worst = BatteryAlert::Critical,
+                Some(6) if worst == BatteryAlert::Normal => worst = BatteryAlert::Red,
+                _ => {}
+            }
+        }
+    }
+    worst
+}
+
+/// Signed distance from `(px, py)` to a rounded rectangle at `(x0, y0)`
+/// sized `w`×`h` with corner radius `r` (negative = inside). Standard
+/// rounded-box SDF.
+fn rounded_rect_sdf(px: f32, py: f32, x0: f32, y0: f32, w: f32, h: f32, r: f32) -> f32 {
+    let r = r.max(0.0).min(w.min(h) / 2.0);
+    let (cx, cy) = (x0 + w / 2.0, y0 + h / 2.0);
+    let qx = (px - cx).abs() - w / 2.0 + r;
+    let qy = (py - cy).abs() - h / 2.0 + r;
+    let (mx, my) = (qx.max(0.0), qy.max(0.0));
+    (mx * mx + my * my).sqrt() + qx.max(qy).min(0.0) - r
+}
+
+/// Overlay a small red "low battery" badge (a circle containing a tiny white
+/// battery glyph) in the same bottom-right spot as the "no signal" badge
+/// below -- the two are mutually exclusive in practice (no signal means no
+/// transmitter is connected to have a battery reading from) so there's no
+/// real conflict. Sits on top of whatever icon is already showing (the
+/// generic logo or the Mic Mini 2 art) rather than replacing it, matching
+/// how the "no signal" badge behaves.
+fn battery_badge_icon(base: &Image<'static>) -> Image<'static> {
+    const RED: [u8; 4] = [0xe0, 0x2b, 0x2b, 0xff];
+    const WHITE: [u8; 4] = [0xff, 0xff, 0xff, 0xff];
+
+    let (width, height) = (base.width(), base.height());
+    let mut rgba = base.rgba().to_vec();
+
+    let r = width.min(height) as f32 * 0.36;
+    let (cx, cy) = (width as f32 - r * 0.95, height as f32 - r * 0.95);
+
+    draw_disc(&mut rgba, width, height, cx, cy, r, WHITE);
+    draw_disc(&mut rgba, width, height, cx, cy, r * 0.86, RED);
+
+    // Mini battery glyph (ring + nub), white on the red disc.
+    let body_w = r * 1.15;
+    let body_h = r * 0.62;
+    let x0 = cx - body_w / 2.0 - r * 0.05;
+    let y0 = cy - body_h / 2.0;
+    let rr = body_h * 0.24;
+    let stroke = (r * 0.14).max(1.2);
+    let nub_w = r * 0.13;
+    let nub_h = body_h * 0.42;
+    let nub_x0 = x0 + body_w - 1.0;
+    let nub_y0 = cy - nub_h / 2.0;
+
+    let x_min = (cx - r).max(0.0) as u32;
+    let x_max = ((cx + r).min(width as f32 - 1.0)) as u32;
+    let y_min = (cy - r).max(0.0) as u32;
+    let y_max = ((cy + r).min(height as f32 - 1.0)) as u32;
+    for y in y_min..=y_max {
+        for x in x_min..=x_max {
+            let (px, py) = (x as f32 + 0.5, y as f32 + 0.5);
+            let outer = rounded_rect_sdf(px, py, x0, y0, body_w, body_h, rr);
+            let inner = rounded_rect_sdf(
+                px,
+                py,
+                x0 + stroke,
+                y0 + stroke,
+                (body_w - 2.0 * stroke).max(0.0),
+                (body_h - 2.0 * stroke).max(0.0),
+                (rr - stroke).max(0.0),
+            );
+            let ring = outer.max(-inner);
+            let nub = rounded_rect_sdf(px, py, nub_x0, nub_y0, nub_w, nub_h, nub_w.min(nub_h) * 0.3);
+            let d = ring.min(nub);
+            let coverage = (0.5 - d).clamp(0.0, 1.0);
+            if coverage > 0.0 {
+                let idx = ((y * width + x) * 4) as usize;
+                blend(&mut rgba, idx, WHITE, coverage);
+            }
+        }
+    }
+    Image::new_owned(rgba, width, height)
+}
+
 /// Overlay a small red "no signal" badge (a circle with an "x") in the
 /// bottom-right corner of `base`, returning a new owned icon.
 fn badge_icon(base: &Image<'static>) -> Image<'static> {
@@ -312,6 +413,26 @@ impl TrayIcons {
             (false, false) => &self.base,
         };
         icon.clone().or_else(|| self.base.clone())
+    }
+
+    /// The icon for a given moment: the usual mic2/no-signal variant, with
+    /// the low-battery badge (see [`battery_badge_icon`]) layered on top
+    /// rather than replacing it, so the app's own icon stays recognisable.
+    /// At `Critical`, `blink_on` toggles the badge on and off each tick.
+    fn pick_with_battery(
+        &self,
+        mic2: bool,
+        alert: bool,
+        battery: BatteryAlert,
+        blink_on: bool,
+    ) -> Option<Image<'static>> {
+        let base = self.pick(mic2, alert)?;
+        let badge = match battery {
+            BatteryAlert::Normal => false,
+            BatteryAlert::Red => true,
+            BatteryAlert::Critical => blink_on,
+        };
+        Some(if badge { battery_badge_icon(&base) } else { base })
     }
 }
 
@@ -389,6 +510,7 @@ fn main() {
             };
             let initial_alert = alert_active(app.handle());
             let initial_mic2 = mic_mini_2_present(app.handle());
+            let initial_battery = battery_alert(app.handle());
 
             let initial = menu_state(app.handle());
             let menu = build_menu(app.handle(), &initial)?;
@@ -432,7 +554,7 @@ fn main() {
                     _ => {}
                 });
             let icon = icons
-                .pick(initial_mic2, initial_alert)
+                .pick_with_battery(initial_mic2, initial_alert, initial_battery, true)
                 .or_else(|| app.default_window_icon().cloned());
             if let Some(icon) = icon {
                 tray = tray.icon(icon);
@@ -440,13 +562,17 @@ fn main() {
             tray.build(app)?;
 
             // Keep the tray menu in sync with device count, NC/LED state, and the
-            // autostart setting; keep the tray icon's "no signal" badge and Mic
-            // Mini 2 variant in sync with what's actually connected.
+            // autostart setting; keep the tray icon's "no signal" badge, Mic Mini 2
+            // variant, and low-battery warning in sync with what's actually
+            // connected. A critical battery blinks by repainting every tick rather
+            // than only on change.
             let handle = app.handle().clone();
             std::thread::spawn(move || {
                 let mut last = initial;
                 let mut last_alert = initial_alert;
                 let mut last_mic2 = initial_mic2;
+                let mut last_battery = initial_battery;
+                let mut blink_on = true;
                 loop {
                     let state = menu_state(&handle);
                     if state != last {
@@ -457,13 +583,27 @@ fn main() {
 
                     let alert = alert_active(&handle);
                     let mic2 = mic_mini_2_present(&handle);
-                    if alert != last_alert || mic2 != last_mic2 {
-                        last_alert = alert;
-                        last_mic2 = mic2;
-                        let icon = icons.pick(mic2, alert);
+                    let battery = battery_alert(&handle);
+
+                    let icon = if battery == BatteryAlert::Critical {
+                        // Repaint every tick regardless of other state changes —
+                        // that's what makes the badge blink on and off (the base
+                        // icon underneath stays put either way).
+                        blink_on = !blink_on;
+                        icons.pick_with_battery(mic2, alert, battery, blink_on)
+                    } else if battery != last_battery || alert != last_alert || mic2 != last_mic2 {
+                        icons.pick_with_battery(mic2, alert, battery, true)
+                    } else {
+                        None
+                    };
+                    last_alert = alert;
+                    last_mic2 = mic2;
+                    last_battery = battery;
+
+                    if let Some(icon) = icon {
                         let h = handle.clone();
                         let _ = handle.run_on_main_thread(move || {
-                            if let (Some(tray), Some(icon)) = (h.tray_by_id("main"), icon) {
+                            if let Some(tray) = h.tray_by_id("main") {
                                 let _ = tray.set_icon(Some(icon));
                             }
                         });

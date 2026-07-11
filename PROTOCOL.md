@@ -421,7 +421,7 @@ have **no header-level fallback** — they're only knowable when at least one
 TX is connected, since they're purely per-transmitter settings. Everything
 in this slot mirrors identically across whichever TX are present **except**
 Voice Tone (`+9` bits `0x40`/`0x80`), the charging indicator (`+7` bit
-`0x02`), and battery level (`+7` bits `0x04`/`0x08`/`0x10`) — all independent
+`0x02`), and battery level (`+7` bits `0x1c`) — all independent
 per transmitter, since each TX has its own tone setting, its own physical
 dock/charge state, and its own battery level. See the Voice Tone note in
 Commands above.
@@ -433,7 +433,7 @@ Commands above.
 | +2          | 3   | Constant zero (reserved, matching the record header shape)            |
 | +5          | 1   | Constant `0x1a` (26) — length of the data that follows, i.e. the rest of the slot |
 | +6          | 1   | Flags: `0x02` LEDs off (inverted), `0x10` TX auto-off active, `0x20` strong NC (mirror), `0x80` NC-button-toggle permission active |
-| +7          | 1   | Flags: `0x01` NC enabled (mirror of offset-20 bit `0x20`), `0x02` this TX is docked/charging (per-TX, not mirrored — reverts within a tick or two of undocking), `0x04`/`0x08`/`0x10` battery level (per-TX — see below); constant bit `0x20` also set, purpose unknown |
+| +7          | 1   | Flags: `0x01` NC enabled (mirror of offset-20 bit `0x20`), `0x02` this TX is docked/charging (per-TX, not mirrored — reverts within a tick or two of undocking), `0x1c` battery level as a 3-bit gauge (per-TX — see below); constant bit `0x20` also set, purpose unknown |
 | +8          | 1   | Flags: `0x04` clip limiter active (mirror of offset-48 bit `0x10`)    |
 | +9          | 1   | Flags: `0x20` low cut active, `0x40` Voice Tone = Rich, `0x80` Voice Tone = Bright (neither set = Standard; Mic Mini 2 only — see Commands); a constant bit `0x01` also set, purpose unknown |
 | +10         | 1   | Constant zero                                                          |
@@ -444,20 +444,22 @@ Since offset `+1` gives the physical TX directly, a decoder can place each
 slot's data by real unit number and never needs to guess which physical
 transmitter a lone connected slot belongs to.
 
-**Battery level (`+7` bits `0x04`/`0x08`/`0x10`):** independent per
-transmitter, and independent of the charging bit — both can be set at once.
-Observed states:
+**Battery level (`+7` bits `0x1c`, i.e. `0x04`/`0x08`/`0x10` together):**
+independent per transmitter, and independent of the charging bit — both can
+be set at once. These three bits form a single 3-bit gauge rather than
+independent flags: read as `(byte >> 2) & 0x07`, higher means more
+depleted. A value of `7` (all three bits set) is the terminal reading
+immediately before the transmitter shuts off from an empty battery; `1`
+(just `0x04`) corresponds to a full charge. The official app's low-battery
+warning icon corresponds to a reading of `6` (`0x08` and `0x10` set, `0x04`
+clear).
 
-| Bits set        | Meaning                                                        |
-| ---------------- | --------------------------------------------------------------- |
-| `0x04`           | Full / healthy                                                  |
-| `0x10`           | Low                                                              |
-| `0x10` and `0x08`| Warning-low (matches the official app's low-battery warning icon) |
-
-These are threshold-crossing flags rather than a linear level: `0x04` clears
-once charge drops below the first threshold, at which point `0x10` sets;
-`0x08` sets in addition to `0x10` on crossing a second, lower threshold. No
-other bit combination has been observed.
+A reading of `0` (no bits set) has not been demonstrated to occur during
+normal charge/discharge and is believed unreachable — the practical range
+is `1`–`7`. The gauge does not update on every possible value during a fast
+charge from empty: at least one intermediate value has been observed
+skipped when charging resumes quickly after a full discharge, so a decoder
+should not assume every value in range is guaranteed to appear.
 
 ### Identity and audio-level pushes: shared record format
 

@@ -31,6 +31,16 @@ impl Handle {
     }
 }
 
+/// Just enough per-transmitter state for a device-list row's battery
+/// indicator — a trimmed-down [`protocol::TxInfo`] rather than the whole
+/// thing, since that's all list/picker UI needs without fetching each
+/// device's full status.
+#[derive(Debug, Clone, Serialize)]
+pub struct TxBattery {
+    pub battery: Option<u8>,
+    pub charging: bool,
+}
+
 /// A lightweight description of a device for lists and pickers.
 #[derive(Debug, Clone, Serialize)]
 pub struct DeviceSummary {
@@ -40,6 +50,9 @@ pub struct DeviceSummary {
     pub pictogram_key: String,
     pub connected: bool,
     pub rx_serial: Option<String>,
+    /// Battery/charging state for each TX slot, `None` where no transmitter
+    /// is connected there.
+    pub tx: [Option<TxBattery>; 2],
 }
 
 /// The result of scanning the bus, used to decide whether to show setup help.
@@ -161,6 +174,12 @@ impl DeviceManager {
                     pictogram_key: h.model.pictogram_key().to_string(),
                     connected: live,
                     rx_serial: st.rx.as_ref().and_then(|r| r.serial.clone()),
+                    tx: std::array::from_fn(|i| {
+                        st.tx[i].as_ref().map(|t| TxBattery {
+                            battery: t.battery,
+                            charging: t.charging.unwrap_or(false),
+                        })
+                    }),
                 }
             })
             .collect();

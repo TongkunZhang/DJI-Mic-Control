@@ -49,11 +49,13 @@ pub struct TxInfo {
     /// Decoded on v2 firmware; not yet decoded on v1, though nothing about
     /// it suggests it's v2-specific, so this is always `None` there for now.
     pub charging: Option<bool>,
-    /// Battery level (`"full"`, `"low"`, or `"warning-low"`) — see
-    /// `PROTOCOL.md`. `None` when the level bits don't match a known
-    /// combination (e.g. a level between the known thresholds), or on v1
-    /// firmware, which this isn't decoded on yet.
-    pub battery: Option<String>,
+    /// Battery gauge, `1` (full) to `7` (empty, immediately precedes
+    /// auto-shutoff) — see `PROTOCOL.md`. Higher means more depleted. `0`
+    /// is believed unreachable in practice. Not every value is guaranteed
+    /// to be observed during a fast charge from empty. `None` before the
+    /// first status push for this transmitter, or on v1 firmware, which
+    /// this isn't decoded on yet.
+    pub battery: Option<u8>,
 }
 
 /// State of the receiver. `serial`/`firmware` are `None` when not yet known
