@@ -3,8 +3,7 @@
   import Sidebar from "./lib/Sidebar.svelte";
   import DevicePanel from "./lib/DevicePanel.svelte";
   import UdevModal from "./lib/UdevModal.svelte";
-  import SideButtonModal from "./lib/SideButtonModal.svelte";
-  import { snapshot, setSetting, setTxSetting, udevHelp, sideButtonState } from "./lib/api.js";
+  import { snapshot, setSetting, setTxSetting, udevHelp, sideButtonKeys, setSideButton } from "./lib/api.js";
 
   // Custom window chrome. macOS keeps its native traffic lights (via the
   // Overlay title bar); Windows/Linux use our own frameless controls.
@@ -48,11 +47,14 @@
   let showUdev = $state(false);
   let help = $state(null);
 
-  // Side-button remapping is macOS-only; the backend says whether it's available.
-  let sideButtonSupported = $state(false);
-  let showSideButton = $state(false);
-  sideButtonState()
-    .then((s) => (sideButtonSupported = s.status.supported))
+  // Per-receiver side-button remapping (macOS only: the snapshot's
+  // `side_button` is null elsewhere). The binding shown is optimistic until
+  // the next snapshot confirms it, keyed by device id.
+  let sideButtonKeyList = $state([]);
+  let sideButtonPending = $state(false);
+  let optimisticSideButton = $state({});
+  sideButtonKeys()
+    .then((k) => (sideButtonKeyList = k))
     .catch(() => {});
 
   const devices = $derived(snap?.devices ?? []);
@@ -69,6 +71,11 @@
       ),
     },
   );
+  const sideButton = $derived.by(() => {
+    const info = selectedDevice ? snap?.side_button ?? null : null;
+    const pendingBinding = optimisticSideButton[selected];
+    return info && pendingBinding ? { ...info, binding: pendingBinding } : info;
+  });
   const linuxAccessIssue = $derived(
     snap?.os === "linux" && snap?.probe?.permission_issue && devices.length === 0,
   );
@@ -160,6 +167,24 @@
     }
   }
 
+  async function changeSideButton(binding) {
+    if (!selected) return;
+    const device = selected;
+    optimisticSideButton = { ...optimisticSideButton, [device]: binding };
+    sideButtonPending = true;
+    error = null;
+    try {
+      await setSideButton(device, binding);
+      await refresh();
+    } catch (e) {
+      error = String(e);
+    } finally {
+      const { [device]: _drop, ...rest } = optimisticSideButton;
+      optimisticSideButton = rest;
+      sideButtonPending = false;
+    }
+  }
+
   async function openUdev() {
     if (!help) help = await udevHelp();
     showUdev = true;
@@ -200,20 +225,6 @@
     </button>
     <span class="brand" data-tauri-drag-region>DJI Mic Control</span>
     <div class="drag-fill" data-tauri-drag-region></div>
-
-    {#if sideButtonSupported}
-      <button
-        class="icon-btn"
-        onclick={() => (showSideButton = true)}
-        aria-label="Side button"
-        title="Side button shortcut"
-      >
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7">
-          <rect x="2.5" y="6" width="19" height="12" rx="2.5" />
-          <path d="M6.5 10h1M10.5 10h1M14.5 10h1M8 14h8" stroke-linecap="round" />
-        </svg>
-      </button>
-    {/if}
 
     {#if !isMac}
       <div class="win-controls">
@@ -261,9 +272,13 @@
           {pending}
           {pendingTx}
           {view}
+          {sideButton}
+          sideButtonKeys={sideButtonKeyList}
+          {sideButtonPending}
           onchange={change}
           onchangeTx={changeTx}
           onview={(v) => (view = v)}
+          onsidebutton={changeSideButton}
         />
       {:else}
         <div class="placeholder">
@@ -288,10 +303,6 @@
 
 {#if showUdev && help}
   <UdevModal {help} onclose={() => (showUdev = false)} />
-{/if}
-
-{#if showSideButton}
-  <SideButtonModal onclose={() => (showSideButton = false)} />
 {/if}
 
 <style>

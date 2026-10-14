@@ -1,6 +1,7 @@
 //! Tauri commands bridging the Svelte front-end to the shared device layer.
 
-use std::sync::Arc;
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex, OnceLock};
 
 use device::{DeviceManager, DeviceStatus, DeviceSummary, Os, Probe, Setting};
 use serde::Serialize;
@@ -19,6 +20,8 @@ pub struct Snapshot {
     pub status: Option<DeviceStatus>,
     /// Setting descriptors for the selected device's model.
     pub settings: Vec<Setting>,
+    /// The selected receiver's side-button binding and state (macOS only).
+    pub side_button: Option<SideButtonDevice>,
 }
 
 /// The udev-rules helper contents shown on Linux when access is blocked.
@@ -31,7 +34,11 @@ pub struct UdevHelp {
 
 /// Read the current state for `device` (or the sole device when omitted).
 #[tauri::command]
-pub fn snapshot(device: Option<String>, mgr: State<'_, Arc<DeviceManager>>) -> Snapshot {
+pub fn snapshot(
+    device: Option<String>,
+    mgr: State<'_, Arc<DeviceManager>>,
+    side_button: State<'_, Arc<SideButtonStore>>,
+) -> Snapshot {
     let devices = mgr.list();
     let probe = mgr.probe();
     let selected = device.or_else(|| mgr.only_device());
@@ -43,6 +50,9 @@ pub fn snapshot(device: Option<String>, mgr: State<'_, Arc<DeviceManager>>) -> S
         ),
         None => (None, Vec::new()),
     };
+    let side_button = selected
+        .as_deref()
+        .and_then(|id| side_button.device_state(id, &mgr));
 
     Snapshot {
         os: device::current_os(),
@@ -50,6 +60,7 @@ pub fn snapshot(device: Option<String>, mgr: State<'_, Arc<DeviceManager>>) -> S
         devices,
         status,
         settings,
+        side_button,
     }
 }
 
@@ -88,52 +99,123 @@ pub fn udev_help() -> UdevHelp {
     }
 }
 
-/// The side-button service plus where its config is saved.
+/// The side-button service, the per-receiver bindings, and where they're saved.
 pub struct SideButtonStore {
     pub service: remap::SideButton,
-    /// `side-button.json` in the app config dir; `None` if it can't be resolved.
-    pub path: Option<std::path::PathBuf>,
+    config: Mutex<remap::Config>,
+    /// `side-button.json` in the app config dir, once known.
+    path: OnceLock<PathBuf>,
+}
+
+impl Default for SideButtonStore {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl SideButtonStore {
-    /// Load the saved config from `path` (or defaults) and start the service.
-    pub fn load(path: Option<std::path::PathBuf>) -> Self {
-        let config = path.as_deref().map(remap::Config::load).unwrap_or_default();
+    /// Start the service with no bindings; see [`load`](Self::load).
+    pub fn new() -> Self {
         Self {
-            service: remap::SideButton::new(config),
-            path,
+            service: remap::SideButton::new(),
+            config: Mutex::new(remap::Config::default()),
+            path: OnceLock::new(),
         }
     }
-}
 
-/// Everything the side-button settings need for one render.
-#[derive(Serialize)]
-pub struct SideButtonState {
-    pub config: remap::Config,
-    pub status: remap::Status,
-    /// Keys a shortcut may use, in display order.
-    pub keys: &'static [remap::Key],
-}
+    /// Load the saved bindings from `path`, which later changes are saved to.
+    pub fn load(&self, path: PathBuf) {
+        *self.config.lock().unwrap() = remap::Config::load(&path);
+        let _ = self.path.set(path);
+    }
 
-/// Read the side-button config and live status.
-#[tauri::command]
-pub fn side_button_state(store: State<'_, SideButtonStore>) -> SideButtonState {
-    SideButtonState {
-        config: store.service.config(),
-        status: store.service.status(),
-        keys: remap::KEYS,
+    /// Point the service at every tracked receiver whose binding is enabled.
+    /// Cheap and idempotent: call it whenever devices or bindings change.
+    pub fn sync(&self, mgr: &DeviceManager) {
+        if !remap::SideButton::supported() {
+            return;
+        }
+        let config = self.config.lock().unwrap();
+        let targets = mgr
+            .list()
+            .into_iter()
+            .filter_map(|d| {
+                let binding = config.devices.get(&d.id).filter(|b| b.enabled)?;
+                Some(remap::Target {
+                    location_id: mgr.location_id(&d.id)?,
+                    shortcut: binding.shortcut.clone(),
+                })
+            })
+            .collect();
+        self.service.set_targets(targets);
+    }
+
+    /// The side-button state of `device` for the UI, or `None` where
+    /// remapping isn't supported.
+    fn device_state(&self, device: &str, mgr: &DeviceManager) -> Option<SideButtonDevice> {
+        if !remap::SideButton::supported() {
+            return None;
+        }
+        let binding = self.config.lock().unwrap().binding(device);
+        let location = mgr.location_id(device);
+        let status = self.service.status();
+        let receiver = location
+            .and_then(|l| status.receivers.get(&l).cloned())
+            .unwrap_or_default();
+        Some(SideButtonDevice {
+            available: location.is_some(),
+            input_monitoring: status.input_monitoring,
+            accessibility: status.accessibility,
+            attached: receiver.attached,
+            presses: receiver.presses,
+            sent: receiver.sent,
+            // Only surface service-wide problems for a receiver that's on.
+            error: receiver
+                .error
+                .or(status.error.filter(|_| binding.enabled)),
+            binding,
+        })
     }
 }
 
-/// Apply and persist a new side-button config.
+/// One receiver's side-button binding and live state.
+#[derive(Serialize)]
+pub struct SideButtonDevice {
+    pub binding: remap::Binding,
+    /// The receiver can be addressed (its location is known).
+    pub available: bool,
+    pub input_monitoring: bool,
+    pub accessibility: bool,
+    /// Its button is currently seized.
+    pub attached: bool,
+    pub presses: u64,
+    pub sent: u64,
+    pub error: Option<String>,
+}
+
+/// Keys a side-button shortcut may use, in display order.
+#[tauri::command]
+pub fn side_button_keys() -> &'static [remap::Key] {
+    remap::KEYS
+}
+
+/// Apply and persist `device`'s side-button binding.
 #[tauri::command]
 pub fn set_side_button(
-    config: remap::Config,
-    store: State<'_, SideButtonStore>,
+    device: String,
+    binding: remap::Binding,
+    store: State<'_, Arc<SideButtonStore>>,
+    mgr: State<'_, Arc<DeviceManager>>,
 ) -> Result<(), String> {
-    store.service.set_config(config.clone())?;
-    if let Some(path) = &store.path {
-        config
+    binding.shortcut.validate()?;
+    let saved = {
+        let mut config = store.config.lock().unwrap();
+        config.devices.insert(device, binding);
+        config.clone()
+    };
+    store.sync(&mgr);
+    if let Some(path) = store.path.get() {
+        saved
             .save(path)
             .map_err(|e| format!("couldn't save side-button settings: {e}"))?;
     }
@@ -144,7 +226,7 @@ pub fn set_side_button(
 /// system prompts can't stall the main thread.
 #[tauri::command]
 pub async fn side_button_request_permissions(
-    store: State<'_, SideButtonStore>,
+    store: State<'_, Arc<SideButtonStore>>,
 ) -> Result<(), String> {
     store.service.request_permissions();
     Ok(())
@@ -152,6 +234,6 @@ pub async fn side_button_request_permissions(
 
 /// Open a Privacy & Security pane in System Settings.
 #[tauri::command]
-pub fn side_button_open_settings(pane: remap::PrivacyPane, store: State<'_, SideButtonStore>) {
+pub fn side_button_open_settings(pane: remap::PrivacyPane, store: State<'_, Arc<SideButtonStore>>) {
     store.service.open_privacy_pane(pane);
 }

@@ -27,19 +27,22 @@ sudo xattr -rd com.apple.quarantine /Applications/DJI\ Mic\ Control.app
 
 The receiver's side button normally acts as Volume Up. On macOS the GUI can
 turn it into any keyboard shortcut instead — for example **Control + F18** to
-start/stop hands-free dictation in Wispr Flow. Click the keyboard icon in the
-top bar, switch on **Send a shortcut when pressed**, then pick modifiers and a
-key (or click **Record** and press the combination).
+start/stop hands-free dictation in Wispr Flow. It's set **per receiver**: select
+the receiver, switch on **Remap side button** in its **Side Button** settings
+group, then pick modifiers and a key (or click **Record** and press the
+combination). Each receiver keeps its own setting; receivers left off keep
+Volume Up.
 
 - It needs **Input Monitoring** (to read the button) and **Accessibility** (to
-  send the shortcut); the dialog shows what's missing and links to System
+  send the shortcut); the Side Button group shows what's missing and links to System
   Settings. Because the app isn't Developer-ID signed, macOS may ask again
   after an update.
-- While enabled, the app holds the receiver's button interface exclusively;
+- While enabled, the app holds that receiver's button interface exclusively;
   switching it off or quitting gives Volume Up back. Audio is unaffected.
 - Don't run the standalone [`dji-mic`](https://github.com/TongkunZhang/dji-mic)
   service at the same time — only one app can hold the button.
-- Settings are saved to `side-button.json` in the app's config directory.
+- Settings are saved per receiver to `side-button.json` in the app's config
+  directory, and reapplied whenever that receiver is plugged in.
 
 Ported from [`TongkunZhang/dji-mic`](https://github.com/TongkunZhang/dji-mic),
 itself inspired by Jonni Lundy's

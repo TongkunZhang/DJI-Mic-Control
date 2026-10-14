@@ -455,10 +455,18 @@ fn main() {
 
     let manager = Arc::new(DeviceManager::new());
 
-    // Continuously rescan the bus so hotplugged devices appear/disappear.
+    // Per-receiver side-button remapping (macOS). Bindings are keyed by
+    // device id and applied to whichever receivers are currently plugged in;
+    // the saved file is loaded in `setup` once the config dir is known.
+    let side_button = Arc::new(commands::SideButtonStore::new());
+
+    // Continuously rescan the bus so hotplugged devices appear/disappear, and
+    // re-point side-button remapping at the receivers now present.
     let scanner = manager.clone();
+    let scanner_side_button = side_button.clone();
     std::thread::spawn(move || loop {
         scanner.refresh();
+        scanner_side_button.sync(&scanner);
         std::thread::sleep(Duration::from_millis(1000));
     });
 
@@ -477,15 +485,13 @@ fn main() {
             Some(vec!["--hidden"]),
         ))
         .manage(manager)
+        .manage(side_button.clone())
         .setup(move |app| {
-            // Side-button remapping (macOS): restore the saved shortcut and
-            // start seizing the button if it was enabled last time.
-            let side_button_path = app
-                .path()
-                .app_config_dir()
-                .ok()
-                .map(|dir| dir.join("side-button.json"));
-            app.manage(commands::SideButtonStore::load(side_button_path));
+            // Side-button remapping (macOS): restore the saved per-receiver
+            // bindings; the scanner thread applies them from here on.
+            if let Ok(dir) = app.path().app_config_dir() {
+                side_button.load(dir.join("side-button.json"));
+            }
 
             // Set the window icon explicitly so the titlebar and taskbar show it
             // even when the desktop-file association is unavailable (e.g. X11).
@@ -638,7 +644,7 @@ fn main() {
             commands::set_setting,
             commands::set_tx_setting,
             commands::udev_help,
-            commands::side_button_state,
+            commands::side_button_keys,
             commands::set_side_button,
             commands::side_button_request_permissions,
             commands::side_button_open_settings,

@@ -21,6 +21,9 @@ const LIVE_WINDOW_MS: u64 = 1500;
 struct Handle {
     model: &'static dyn DeviceModel,
     actor: Actor,
+    /// IOKit location of the USB device (macOS only), used to find the same
+    /// receiver through other macOS APIs.
+    location_id: Option<u32>,
 }
 
 impl Handle {
@@ -132,7 +135,11 @@ impl DeviceManager {
             match opened {
                 Ok(iface) => {
                     let actor = actor::spawn(model, iface);
-                    handles.insert(id, Handle { model, actor });
+                    #[cfg(target_os = "macos")]
+                    let location_id = Some(info.location_id());
+                    #[cfg(not(target_os = "macos"))]
+                    let location_id = None;
+                    handles.insert(id, Handle { model, actor, location_id });
                 }
                 Err(e) => {
                     if e.kind() == ErrorKind::PermissionDenied {
@@ -202,6 +209,13 @@ impl DeviceManager {
         // Reflect live streaming, not merely "has ever connected".
         status.connected = live;
         Ok(status)
+    }
+
+    /// The IOKit location ID of device `id` (macOS only; `None` elsewhere or
+    /// if the device isn't tracked). It changes when the device moves to
+    /// another port, so don't persist it.
+    pub fn location_id(&self, id: &str) -> Option<u32> {
+        self.handles.lock().unwrap().get(id).and_then(|h| h.location_id)
     }
 
     /// The settings descriptors for `id`'s model.

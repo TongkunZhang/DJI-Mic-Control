@@ -22,6 +22,10 @@ extern "C" {
         key_callbacks: Ref,
         value_callbacks: Ref,
     ) -> Ref;
+    fn CFArrayCreate(allocator: Ref, values: *const Ref, count: c_long, callbacks: Ref) -> Ref;
+    fn CFGetTypeID(value: Ref) -> usize;
+    fn CFNumberGetTypeID() -> usize;
+    fn CFNumberGetValue(number: Ref, kind: c_long, value: *mut c_void) -> bool;
     fn CFRunLoopGetCurrent() -> Ref;
     fn CFRunLoopRunInMode(mode: Ref, seconds: c_double, return_after_source: bool) -> c_int;
     static kCFRunLoopDefaultMode: Ref;
@@ -29,12 +33,15 @@ extern "C" {
     // CFDictionaryKeyCallBacks / CFDictionaryValueCallBacks: a version word plus five callbacks.
     static kCFTypeDictionaryKeyCallBacks: [usize; 6];
     static kCFTypeDictionaryValueCallBacks: [usize; 6];
+    // CFArrayCallBacks: a version word plus four callbacks.
+    static kCFTypeArrayCallBacks: [usize; 5];
 }
 
 #[link(name = "IOKit", kind = "framework")]
 extern "C" {
     fn IOHIDManagerCreate(allocator: Ref, options: u32) -> Ref;
-    fn IOHIDManagerSetDeviceMatching(manager: Ref, matching: Ref);
+    fn IOHIDManagerSetDeviceMatchingMultiple(manager: Ref, multiple: Ref);
+    fn IOHIDDeviceGetProperty(device: Ref, key: Ref) -> Ref;
     fn IOHIDManagerRegisterInputValueCallback(
         manager: Ref,
         callback: HidCallback,
@@ -125,18 +132,26 @@ pub fn request_permissions() {
     }
 }
 
-/// A seized IOHIDManager matching the receiver's Consumer Control interface.
+/// kCFNumberSInt32Type
+const SINT32: c_long = 3;
+
+fn number(value: i32) -> Owned {
+    // SAFETY: `value` outlives the call, which copies it.
+    Owned(unsafe { CFNumberCreate(ptr::null(), SINT32, (&value as *const i32).cast()) })
+}
+
+/// A seized IOHIDManager matching specific receivers' Consumer Control
+/// interfaces.
 pub struct Manager {
     value: Owned,
     run_loop: Ref,
     _matching: Owned,
-    _keys: [Owned; 4],
-    _values: Vec<Owned>,
 }
 
 impl Manager {
-    /// Open and seize every attached `vendor:product` Consumer Control
-    /// interface, delivering callbacks on the current thread's run loop.
+    /// Open and seize the `vendor:product` Consumer Control interface of each
+    /// receiver at `locations` (IOKit location IDs), delivering callbacks on
+    /// the current thread's run loop. Receivers elsewhere are left alone.
     ///
     /// # Safety
     /// The caller keeps `context` alive until this manager is dropped, and
@@ -144,6 +159,7 @@ impl Manager {
     pub unsafe fn open(
         vendor: u16,
         product: u16,
+        locations: &[u32],
         context: *mut c_void,
         input: HidCallback,
         attached: HidCallback,
@@ -154,20 +170,37 @@ impl Manager {
             string(c"ProductID"),
             string(c"PrimaryUsagePage"),
             string(c"PrimaryUsage"),
+            string(c"LocationID"),
         ];
-        let numbers = [vendor as i32, product as i32, 0x0c, 1];
-        let values: Vec<Owned> = numbers
-            .iter()
-            .map(|n| Owned(CFNumberCreate(ptr::null(), 3, (n as *const i32).cast())))
-            .collect();
         let key_refs: Vec<Ref> = keys.iter().map(|k| k.0).collect();
-        let value_refs: Vec<Ref> = values.iter().map(|v| v.0).collect();
-        let matching = dictionary(&key_refs, &value_refs);
+        // One matching dictionary per receiver. Dictionaries retain their
+        // entries and the array retains the dictionaries.
+        let dictionaries: Vec<Owned> = locations
+            .iter()
+            .map(|&location| {
+                let values = [
+                    number(vendor as i32),
+                    number(product as i32),
+                    number(0x0c),
+                    number(1),
+                    number(location as i32),
+                ];
+                let value_refs: Vec<Ref> = values.iter().map(|v| v.0).collect();
+                dictionary(&key_refs, &value_refs)
+            })
+            .collect();
+        let dictionary_refs: Vec<Ref> = dictionaries.iter().map(|d| d.0).collect();
+        let matching = Owned(CFArrayCreate(
+            ptr::null(),
+            dictionary_refs.as_ptr(),
+            dictionary_refs.len() as c_long,
+            ptr::addr_of!(kCFTypeArrayCallBacks).cast(),
+        ));
         let manager = Owned(IOHIDManagerCreate(ptr::null(), 0));
-        if manager.0.is_null() {
+        if manager.0.is_null() || matching.0.is_null() {
             return Err("IOHIDManagerCreate failed".into());
         }
-        IOHIDManagerSetDeviceMatching(manager.0, matching.0);
+        IOHIDManagerSetDeviceMatchingMultiple(manager.0, matching.0);
         IOHIDManagerRegisterInputValueCallback(manager.0, input, context);
         IOHIDManagerRegisterDeviceMatchingCallback(manager.0, attached, context);
         IOHIDManagerRegisterDeviceRemovalCallback(manager.0, removed, context);
@@ -177,8 +210,6 @@ impl Manager {
             value: manager,
             run_loop,
             _matching: matching,
-            _keys: keys,
-            _values: values,
         };
         let code = IOHIDManagerOpen(result.value.0, 1); // kIOHIDOptionsTypeSeizeDevice
         if code != 0 {
@@ -189,6 +220,21 @@ impl Manager {
         }
         Ok(result)
     }
+}
+
+/// The IOKit location ID of an IOHIDDevice — the same value as its USB
+/// device's location, which is how a HID callback is tied back to a receiver.
+///
+/// # Safety
+/// `device` is a valid IOHIDDeviceRef (e.g. one passed to a HID callback).
+pub unsafe fn device_location(device: Ref) -> Option<u32> {
+    let key = string(c"LocationID");
+    let value = IOHIDDeviceGetProperty(device, key.0); // Get rule: not owned
+    if value.is_null() || CFGetTypeID(value) != CFNumberGetTypeID() {
+        return None;
+    }
+    let mut out: i32 = 0;
+    CFNumberGetValue(value, SINT32, (&mut out as *mut i32).cast()).then_some(out as u32)
 }
 
 impl Drop for Manager {

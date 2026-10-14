@@ -24,14 +24,14 @@ export function udevHelp() {
   return invoke("udev_help");
 }
 
-/** Side-button remapping config, live status, and the mappable keys. */
-export function sideButtonState() {
-  return invoke("side_button_state");
+/** Keys a side-button shortcut may use: `[{ code, label, keycode }]`. */
+export function sideButtonKeys() {
+  return invoke("side_button_keys");
 }
 
-/** Apply and persist a side-button config (`{ enabled, shortcut }`). */
-export function setSideButton(config) {
-  return invoke("set_side_button", { config });
+/** Apply and persist one receiver's side-button binding (`{ enabled, shortcut }`). */
+export function setSideButton(device, binding) {
+  return invoke("set_side_button", { device, binding });
 }
 
 /** Prompt for the macOS permissions the side button needs. */

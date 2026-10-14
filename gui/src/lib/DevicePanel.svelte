@@ -3,6 +3,7 @@
   import SettingControl from "./SettingControl.svelte";
   import NoiseCancelControl from "./NoiseCancelControl.svelte";
   import BatteryIcon from "./BatteryIcon.svelte";
+  import SideButtonControl from "./SideButtonControl.svelte";
 
   let {
     device,
@@ -12,9 +13,14 @@
     pending = {},
     pendingTx = {},
     view = "compact",
+    // This receiver's side-button binding/state (macOS only, else null).
+    sideButton = null,
+    sideButtonKeys = [],
+    sideButtonPending = false,
     onchange,
     onchangeTx,
     onview,
+    onsidebutton,
   } = $props();
 
   // Audio levels sit roughly in the 0x14–0x4f range; scale to a full bar.
@@ -68,6 +74,9 @@
       }
       out.push(s);
     }
+    // The side button is a per-receiver app feature rather than a device
+    // setting, but lives alongside them as its own group.
+    if (sideButton) out.push({ id: "__side-button", group: "Side Button", __sideButton: true });
     return out;
   });
 
@@ -99,7 +108,8 @@
       let min = 0;
       for (let i = 1; i < colCount; i++) if (heights[i] < heights[min]) min = i;
       cols[min].push([name, items]);
-      heights[min] += items.length + 1.5; // ~header + rows, as a height estimate
+      // ~header + rows, as a height estimate; the side-button group is taller.
+      heights[min] += items.reduce((h, s) => h + (s.__sideButton ? 3 : 1), 0) + 1.5;
     }
     return cols;
   });
@@ -231,7 +241,14 @@
   {#if view === "list"}
     <section class="settings">
       {#each renderSettings as s (s.id)}
-        {#if s.__ncComposite}
+        {#if s.__sideButton}
+          <SideButtonControl
+            info={sideButton}
+            keys={sideButtonKeys}
+            pending={sideButtonPending}
+            onchange={onsidebutton}
+          />
+        {:else if s.__ncComposite}
           <NoiseCancelControl
             power={settingsById["noise-cancel-power"]}
             mode={settingsById["noise-cancel"]}
@@ -262,7 +279,15 @@
               <div class="group-title">{name}</div>
               <div class="group-grid">
                 {#each items as s (s.id)}
-                  {#if s.__ncComposite}
+                  {#if s.__sideButton}
+                    <SideButtonControl
+                      info={sideButton}
+                      keys={sideButtonKeys}
+                      pending={sideButtonPending}
+                      compact
+                      onchange={onsidebutton}
+                    />
+                  {:else if s.__ncComposite}
                     <NoiseCancelControl
                       power={settingsById["noise-cancel-power"]}
                       mode={settingsById["noise-cancel"]}
