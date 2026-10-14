@@ -23,3 +23,23 @@ export function setTxSetting(device, tx, setting, value) {
 export function udevHelp() {
   return invoke("udev_help");
 }
+
+/** Side-button remapping config, live status, and the mappable keys. */
+export function sideButtonState() {
+  return invoke("side_button_state");
+}
+
+/** Apply and persist a side-button config (`{ enabled, shortcut }`). */
+export function setSideButton(config) {
+  return invoke("set_side_button", { config });
+}
+
+/** Prompt for the macOS permissions the side button needs. */
+export function requestSideButtonPermissions() {
+  return invoke("side_button_request_permissions");
+}
+
+/** Open a Privacy & Security pane: "input-monitoring" or "accessibility". */
+export function openSideButtonSettings(pane) {
+  return invoke("side_button_open_settings", { pane });
+}

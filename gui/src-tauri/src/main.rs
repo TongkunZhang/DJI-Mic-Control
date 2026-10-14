@@ -478,6 +478,15 @@ fn main() {
         ))
         .manage(manager)
         .setup(move |app| {
+            // Side-button remapping (macOS): restore the saved shortcut and
+            // start seizing the button if it was enabled last time.
+            let side_button_path = app
+                .path()
+                .app_config_dir()
+                .ok()
+                .map(|dir| dir.join("side-button.json"));
+            app.manage(commands::SideButtonStore::load(side_button_path));
+
             // Set the window icon explicitly so the titlebar and taskbar show it
             // even when the desktop-file association is unavailable (e.g. X11).
             if let Some(window) = app.get_webview_window("main") {
@@ -629,6 +638,10 @@ fn main() {
             commands::set_setting,
             commands::set_tx_setting,
             commands::udev_help,
+            commands::side_button_state,
+            commands::set_side_button,
+            commands::side_button_request_permissions,
+            commands::side_button_open_settings,
         ])
         .run(tauri::generate_context!())
         .expect("error while running DJI Mic Control");

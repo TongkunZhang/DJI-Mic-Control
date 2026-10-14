@@ -87,3 +87,71 @@ pub fn udev_help() -> UdevHelp {
         steps: device::udev_instructions(),
     }
 }
+
+/// The side-button service plus where its config is saved.
+pub struct SideButtonStore {
+    pub service: remap::SideButton,
+    /// `side-button.json` in the app config dir; `None` if it can't be resolved.
+    pub path: Option<std::path::PathBuf>,
+}
+
+impl SideButtonStore {
+    /// Load the saved config from `path` (or defaults) and start the service.
+    pub fn load(path: Option<std::path::PathBuf>) -> Self {
+        let config = path.as_deref().map(remap::Config::load).unwrap_or_default();
+        Self {
+            service: remap::SideButton::new(config),
+            path,
+        }
+    }
+}
+
+/// Everything the side-button settings need for one render.
+#[derive(Serialize)]
+pub struct SideButtonState {
+    pub config: remap::Config,
+    pub status: remap::Status,
+    /// Keys a shortcut may use, in display order.
+    pub keys: &'static [remap::Key],
+}
+
+/// Read the side-button config and live status.
+#[tauri::command]
+pub fn side_button_state(store: State<'_, SideButtonStore>) -> SideButtonState {
+    SideButtonState {
+        config: store.service.config(),
+        status: store.service.status(),
+        keys: remap::KEYS,
+    }
+}
+
+/// Apply and persist a new side-button config.
+#[tauri::command]
+pub fn set_side_button(
+    config: remap::Config,
+    store: State<'_, SideButtonStore>,
+) -> Result<(), String> {
+    store.service.set_config(config.clone())?;
+    if let Some(path) = &store.path {
+        config
+            .save(path)
+            .map_err(|e| format!("couldn't save side-button settings: {e}"))?;
+    }
+    Ok(())
+}
+
+/// Prompt for the macOS permissions the side button needs. Async so the
+/// system prompts can't stall the main thread.
+#[tauri::command]
+pub async fn side_button_request_permissions(
+    store: State<'_, SideButtonStore>,
+) -> Result<(), String> {
+    store.service.request_permissions();
+    Ok(())
+}
+
+/// Open a Privacy & Security pane in System Settings.
+#[tauri::command]
+pub fn side_button_open_settings(pane: remap::PrivacyPane, store: State<'_, SideButtonStore>) {
+    store.service.open_privacy_pane(pane);
+}
